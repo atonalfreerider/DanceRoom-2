@@ -143,7 +143,106 @@ def calibrate_camera(video_path):
     cv2.destroyAllWindows()
     return camera_params, fps
 
-def render(video_path, calibrated_camera, poses):
+def load_focal_lengths(video_path):
+    """Load cached focal lengths if they exist"""
+    json_path = os.path.splitext(video_path)[0] + '_focal_lengths_per_frame.json'
+    try:
+        with open(json_path, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+def save_focal_lengths(video_path, focal_lengths):
+    """Save focal lengths to JSON"""
+    json_path = os.path.splitext(video_path)[0] + '_focal_lengths_per_frame.json'
+    
+    # Convert numpy float32 to regular Python float
+    focal_lengths = [float(f) for f in focal_lengths]
+    
+    with open(json_path, 'w') as f:
+        json.dump(focal_lengths, f, indent=4)
+    print(f"\nSaved focal lengths to: {json_path}")
+    print(f"Focal length range: {min(focal_lengths):.3f} to {max(focal_lengths):.3f}")
+    print(f"Average focal length: {sum(focal_lengths)/len(focal_lengths):.3f}")
+
+def calculate_deep_background_depth(depth_map):
+    """Calculate average depth of the deep background region"""
+    if depth_map is None:
+        return None
+        
+    max_depth = np.max(depth_map)
+    std_dev = np.std(depth_map)
+    
+    # Define deep background as range from (max - std_dev) to max
+    deep_mask = (depth_map > (max_depth - std_dev)) & (depth_map <= max_depth)
+    deep_values = depth_map[deep_mask]
+    
+    if len(deep_values) == 0:
+        return None
+        
+    return np.mean(deep_values)
+
+def calculate_focal_lengths(video_path, depth_dir, initial_focal_length, focal_change_rate=0.1):
+    """Calculate focal lengths based on depth changes"""
+    
+    # Check for cached focal lengths
+    cached_focal_lengths = load_focal_lengths(video_path)
+    if cached_focal_lengths is not None:
+        print("Loading cached focal lengths")
+        return cached_focal_lengths
+        
+    print("Calculating focal lengths from depth maps...")
+    
+    # Get video frame count
+    cap = cv2.VideoCapture(video_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    
+    focal_lengths = [initial_focal_length]  # Start with initial focal length
+    prev_depth = None
+    
+    # Process each frame
+    with tqdm(total=frame_count-1, desc="Processing depth maps") as pbar:
+        for frame_num in range(frame_count-1):  # -1 because we compare with next frame
+            # Load depth map
+            depth_file = os.path.join(depth_dir, f'{frame_num:06d}.npz')
+            if os.path.exists(depth_file):
+                with np.load(depth_file) as data:
+                    keys = list(data.keys())
+                    if keys:
+                        depth_map = data[keys[0]]
+                        current_depth = calculate_deep_background_depth(depth_map)
+                        
+                        if prev_depth is not None and current_depth is not None:
+                            # Calculate depth change ratio
+                            depth_ratio = current_depth / prev_depth
+                            
+                            # Adjust focal length based on depth change
+                            # If depth increases (ratio > 1), focal length increases
+                            prev_focal = focal_lengths[-1]
+                            new_focal = prev_focal * (1 + (depth_ratio - 1) * focal_change_rate)
+                            
+                            # Ensure focal length stays within reasonable bounds
+                            new_focal = max(0.1, min(2.0, new_focal))
+                            focal_lengths.append(new_focal)
+                        else:
+                            # If we can't calculate depth change, use previous focal length
+                            focal_lengths.append(focal_lengths[-1])
+                            
+                        prev_depth = current_depth
+                    else:
+                        focal_lengths.append(focal_lengths[-1])
+            else:
+                focal_lengths.append(focal_lengths[-1])
+                
+            pbar.update(1)
+    
+    # Save focal lengths to cache
+    save_focal_lengths(video_path, focal_lengths)
+    
+    return focal_lengths
+
+def render(video_path, calibrated_camera, poses, depth_dir=None):
     """Render debug overlay video"""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -154,6 +253,16 @@ def render(video_path, calibrated_camera, poses):
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # Calculate focal lengths if depth directory is provided
+    if depth_dir:
+        focal_lengths = calculate_focal_lengths(
+            video_path, 
+            depth_dir, 
+            calibrated_camera['focal_length']
+        )
+    else:
+        focal_lengths = [calibrated_camera['focal_length']] * frame_count
 
     # Create output video writer
     output_path = os.path.splitext(video_path)[0] + '_debug_overlay.mp4'
@@ -182,12 +291,15 @@ def render(video_path, calibrated_camera, poses):
             current_pose_rotation = Rotation.from_quat(current_pose[3:])
             current_camera_rotation = current_pose_rotation * initial_rotation
 
+            # Use frame-specific focal length
+            current_focal_length = focal_lengths[frame_idx]
+
             # Draw origin corner overlay
             frame_with_overlay = draw_origin_corner(
                 frame.copy(),
                 calibrated_camera['position'],
                 current_camera_rotation,
-                calibrated_camera['focal_length'],
+                current_focal_length,  # Use current focal length
                 intrinsics
             )
 
@@ -294,6 +406,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--video_path', type=str, required=True)
+    parser.add_argument('--depth_dir', type=str, help='Directory containing depth .npz files')
     args = parser.parse_args()
 
     # First, run camera calibration
@@ -305,4 +418,4 @@ if __name__ == '__main__':
     
     if result:
         poses = json_to_poses(result)
-        render(args.video_path, calibrated_camera, poses)
+        render(args.video_path, calibrated_camera, poses, args.depth_dir)
