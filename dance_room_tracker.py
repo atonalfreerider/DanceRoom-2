@@ -1,27 +1,29 @@
 import numpy as np
-import json
 import cv2
 from scipy.spatial.transform import Rotation
 
+import utils
+from cotracker_runner import CoTracker
 
-class FloorTrack:
+
+class DanceRoomTracker:
     def __init__(self, video_path, output_dir):
         self.video_path = video_path
         self.output_dir = output_dir
         self.camera_poses_json_path = output_dir + '/camera_poses.json'
         self.camera_poses = self.load_camera_poses()
+        self.cotracker = CoTracker()
 
     def load_camera_poses(self):
         """Load initial camera poses from JSON if it exists"""
-        try:
-            with open(self.camera_poses_json_path, 'r') as f:
-                data = json.load(f)
-                return {
-                    'position': np.array(data['position']),
-                    'rotation': np.array(data['rotation']),
-                    'focal_length': data['focal_length']
-                }
-        except FileNotFoundError:
+        data = utils.load_json(self.camera_poses_json_path)
+        if data:
+            return {
+                'position': np.array(data['position']),
+                'rotation': np.array(data['rotation']),
+                'focal_length': data['focal_length']
+            }
+        else:
             # Default camera pose
             return {
                 'position': np.array([0.0, 1.2, 3.5]),
@@ -36,8 +38,7 @@ class FloorTrack:
             'rotation': self.camera_poses['rotation'].tolist(),
             'focal_length': self.camera_poses['focal_length']
         }
-        with open(self.camera_poses_json_path, 'w') as f:
-            json.dump(data, f, indent=4)
+        utils.save_json(data, self.camera_poses_json_path)
 
     def calibrate_camera(self):
         """Interactive camera calibration function"""
@@ -142,6 +143,11 @@ class FloorTrack:
         cap.release()
         cv2.destroyAllWindows()
 
+    def X(self):
+        # TODO
+        points = None
+        pred_track, pred_vis = CoTracker.track(self.video_path, points)
+
     def render(self):
         """Render debug overlay video"""
         cap = cv2.VideoCapture(self.video_path)
@@ -193,4 +199,40 @@ class FloorTrack:
             cv2.line(frame, image_points[0], image_points[i+1], color, 2)
 
         return frame
+
+    @staticmethod
+    def draw_pose(image, keypoints, color, is_lead_or_follow=False):
+        connections = [
+            (0, 1), (0, 2), (1, 3), (2, 4),  # Head
+            (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),  # Arms
+            (5, 11), (6, 12), (11, 13), (12, 14), (13, 15), (14, 16)  # Legs
+        ]
+
+        def is_valid_point(point):
+            return point[0] != 0 or point[1] != 0
+
+        for connection in connections:
+            start_point = keypoints[connection[0]][:2]
+            end_point = keypoints[connection[1]][:2]
+            if is_valid_point(start_point) and is_valid_point(end_point):
+                cv2.line(image, tuple(map(int, start_point)), tuple(map(int, end_point)), color, 2)
+
+        for point in keypoints:
+            if is_valid_point(point[:2]):
+                cv2.circle(image, tuple(map(int, point[:2])), 3, color, -1)
+
+        if is_lead_or_follow:
+            # Draw 'L' on left side
+            left_shoulder = keypoints[5][:2]
+            left_hip = keypoints[11][:2]
+            if is_valid_point(left_shoulder) and is_valid_point(left_hip):
+                mid_point = ((left_shoulder[0] + left_hip[0]) // 2, (left_shoulder[1] + left_hip[1]) // 2)
+                cv2.putText(image, 'L', tuple(map(int, mid_point)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+            # Draw 'R' on right side
+            right_shoulder = keypoints[6][:2]
+            right_hip = keypoints[12][:2]
+            if is_valid_point(right_shoulder) and is_valid_point(right_hip):
+                mid_point = ((right_shoulder[0] + right_hip[0]) // 2, (right_shoulder[1] + right_hip[1]) // 2)
+                cv2.putText(image, 'R', tuple(map(int, mid_point)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 

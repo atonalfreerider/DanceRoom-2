@@ -1,28 +1,16 @@
 import cv2
 from ultralytics import YOLO
-import json
 from pathlib import Path
 import tqdm
+
+import utils
 
 
 class YOLOPose:
     def __init__(self, video_path, output_dir):
         self.video_path = video_path
         self.detections_file = output_dir + "/detections.json"
-        self.detections = self.load_json(self.detections_file)
-
-    @staticmethod
-    def load_json(json_path):
-        try:
-            with open(json_path, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {}
-
-    @staticmethod
-    def save_json(data, json_path):
-        with open(json_path, 'w') as f:
-            json.dump(data, f, indent=2)
+        self.detections = utils.load_json(self.detections_file)
 
     def detect_poses(self):
         if self.detections:
@@ -38,7 +26,7 @@ class YOLOPose:
         else:
             raise ValueError("Input must be a video file or a directory containing PNG images.")
 
-        self.save_json(self.detections, self.detections_file)
+        utils.save_json(self.detections, self.detections_file)
         print(f"Saved pose detections for {len(self.detections)} frames/images.")
 
     def process_video(self, model, video_path):

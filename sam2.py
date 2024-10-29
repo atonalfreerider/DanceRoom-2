@@ -1,7 +1,8 @@
-import json
 import cv2
 from tqdm import tqdm
 from ultralytics import SAM
+
+import utils
 
 
 class Sam2:
@@ -46,8 +47,7 @@ class Sam2:
                 pbar.update(1)
 
         # Save the results to a JSON file
-        with open(self.output_path, "w") as json_file:
-            json.dump(frames_data, json_file, indent=4)
+        utils.save_json(frames_data, self.output_path)
 
         print(f"Mask contours saved to {self.output_path}")
 

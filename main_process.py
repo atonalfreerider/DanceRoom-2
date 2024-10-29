@@ -2,7 +2,7 @@ import os
 import argparse
 import sam2
 import yolo_pose
-import floor_track
+import dance_room_tracker
 
 def main(video_path, output_dir):
     os.makedirs(output_dir, exist_ok=True)
@@ -16,8 +16,8 @@ def main(video_path, output_dir):
     yoloPose.detect_poses()
 
     # prompt user to orient camera in room, track dancers
-    floorTrack = floor_track.FloorTrack(video_path, output_dir)
-    floorTrack.calibrate_camera()
+    danceRoomTracker = dance_room_tracker.DanceRoomTracker(video_path, output_dir)
+    danceRoomTracker.calibrate_camera()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process video for person segmentation and room orientation.")
