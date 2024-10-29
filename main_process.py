@@ -8,16 +8,17 @@ def main(video_path, output_dir):
     os.makedirs(output_dir, exist_ok=True)
 
     # possibly use segments. slow process at 1920x1080 x 3min: ~5hr
-    #saM2 = sam2.Sam2(video_path, output_dir)
-    #saM2.run()
+    # saM2 = sam2.Sam2(video_path, output_dir)
+    # saM2.run()
 
     # use YOLOv11-pose to detect poses of figures and track them with IoU. Output detections.json for later use
     yoloPose = yolo_pose.YOLOPose(video_path, output_dir)
     yoloPose.detect_poses()
 
-    # prompt user to orient camera in room, track dancers
+    # Initialize room tracking and dancer selection
     danceRoomTracker = dance_room_tracker.DanceRoomTracker(video_path, output_dir)
-    danceRoomTracker.calibrate_camera()
+    danceRoomTracker.initialize_tracking()  # New method for the updated workflow
+    danceRoomTracker.run_tracking()  # New method to handle the continuous tracking process
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process video for person segmentation and room orientation.")
