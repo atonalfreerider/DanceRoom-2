@@ -77,28 +77,9 @@ class VirtualRoom:
         # Return closest intersection point and its type
         if intersections:
             intersections.sort(key=lambda x: x[2])  # Sort by distance
-            return intersections[0][1]  # Return the point
+            return intersections[0]  # Return the point
 
         return None
-
-    def categorize_tracking_point(self, image_point, world_point, tracking_points):
-        """Categorize a tracking point based on its position in the virtual room"""
-        if world_point is None:
-            return
-
-        x, y, z = world_point
-        hw, hd = self.room_width / 2, self.room_depth / 2
-        plane_threshold = 0.2  # meters
-
-        # Check which plane the point lies on
-        if abs(y) < plane_threshold:  # Floor plane
-            tracking_points['floor'].append(image_point)
-        elif abs(z + hd) < plane_threshold:  # Back wall
-            tracking_points['back_wall'].append(image_point)
-        elif abs(x - hw) < plane_threshold:  # Right wall
-            tracking_points['right_wall'].append(image_point)
-        elif abs(x + hw) < plane_threshold:  # Left wall
-            tracking_points['left_wall'].append(image_point)
 
     def draw_virtual_room(self, frame, camera_poses):
         """Draw the virtual room borders and floor origin"""
@@ -282,66 +263,6 @@ class VirtualRoom:
                     cv2.circle(frame, origin_pixel, 5, (255, 255, 255), -1)  # Origin point in white
 
         return frame
-
-    def project_to_world(self, world_point, position, rotation, focal_length, camera_poses):
-        """Project image point to world coordinates using current camera pose"""
-        fx = fy = min(self.frame_height, self.frame_width)
-        cx, cy = self.frame_width / 2, self.frame_height / 2
-
-        # Convert to normalized image coordinates
-        x = (world_point[0] - cx) / fx
-        y = (world_point[1] - cy) / fy
-
-        # Create ray direction in camera space
-        ray_dir = np.array([x, y, -focal_length])
-        ray_dir = ray_dir / np.linalg.norm(ray_dir)
-
-        # Transform ray to world space
-        world_ray = rotation.apply(ray_dir)
-
-        # Intersect with room surfaces
-        intersections = []
-
-        # Floor intersection
-        if world_ray[1] != 0:  # Not parallel to floor
-            t = (-position[1] - camera_poses['position'][1]) / world_ray[1]
-            if t > 0:
-                point = camera_poses['position'] + t * world_ray
-                if (abs(point[0]) <= self.room_width / 2 and
-                        abs(point[2]) <= self.room_depth / 2):
-                    intersections.append((point, t))
-
-        # Back wall intersection
-        if world_ray[2] != 0:
-            t = (self.room_depth / 2 - camera_poses['position'][2]) / world_ray[2]
-            if t > 0:
-                point = camera_poses['position'] + t * world_ray
-                if (abs(point[0]) <= self.room_width / 2 and
-                        abs(point[1]) <= self.room_height / 2):
-                    intersections.append((point, t))
-
-        # Left wall intersection
-        if world_ray[0] != 0:
-            t = (-self.room_width / 2 - camera_poses['position'][0]) / world_ray[0]
-            if t > 0:
-                point = camera_poses['position'] + t * world_ray
-                if (abs(point[2]) <= self.room_depth / 2 and
-                        abs(point[1]) <= self.room_height / 2):
-                    intersections.append((point, t))
-
-        # Right wall intersection
-        if world_ray[0] != 0:
-            t = (self.room_width / 2 - camera_poses['position'][0]) / world_ray[0]
-            if t > 0:
-                point = camera_poses['position'] + t * world_ray
-                if (abs(point[2]) <= self.room_depth / 2 and
-                        abs(point[1]) <= self.room_height / 2):
-                    intersections.append((point, t))
-
-        # Return closest intersection point
-        if intersections:
-            return min(intersections, key=lambda x: x[1])[0]
-        return None
 
     def mouse_callback(self, x, y, frame_height, frame_width, camera_poses):
         # Debug ray casting

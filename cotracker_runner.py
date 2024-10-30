@@ -22,9 +22,8 @@ class CoTracker:
         )
         self.model = self.model.to(DEFAULT_DEVICE)
 
-
     def track(self, video_path, points, start_frame=0, num_frames=50):
-        """Track points through video segment"""
+        """Track points through video segment with automatic batch size adjustment"""
         # Load video segment
         cap = cv2.VideoCapture(video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -43,7 +42,7 @@ class CoTracker:
         
         if not frames:
             return None, None
-            
+
         # Convert to tensor
         video = torch.from_numpy(np.stack(frames)).permute(0, 3, 1, 2)
         video = video.unsqueeze(0).to(DEFAULT_DEVICE)
@@ -53,12 +52,55 @@ class CoTracker:
         for i, (x, y) in enumerate(points):
             queries[0, i] = torch.tensor([0, x, y])
 
-        # Run tracking
-        pred_tracks, pred_visibility = self.model(
-            video,
-            queries=queries,
-            backward_tracking=True
-        )
-
-        return pred_tracks[0].cpu().numpy(), pred_visibility[0].cpu().numpy()
+        # Try tracking with different batch sizes
+        batch_sizes = [50, 25, 10, 5]  # Progressively smaller batch sizes
+        
+        for batch_size in batch_sizes:
+            try:
+                if batch_size < len(frames):
+                    # Process in batches
+                    all_tracks = []
+                    all_visibilities = []
+                    
+                    for i in range(0, len(frames), batch_size):
+                        end_idx = min(i + batch_size, len(frames))
+                        batch_video = video[:, i:end_idx]
+                        
+                        # Adjust queries for batch start time
+                        batch_queries = queries.clone()
+                        batch_queries[..., 0] = 0  # Reset time to 0 for each batch
+                        
+                        pred_tracks, pred_visibility = self.model(
+                            batch_video,
+                            queries=batch_queries,
+                            backward_tracking=True
+                        )
+                        
+                        all_tracks.append(pred_tracks[0].cpu().numpy())
+                        all_visibilities.append(pred_visibility[0].cpu().numpy())
+                    
+                    # Concatenate results
+                    final_tracks = np.concatenate(all_tracks, axis=0)
+                    final_visibilities = np.concatenate(all_visibilities, axis=0)
+                    
+                    return final_tracks, final_visibilities
+                else:
+                    # Process all frames at once
+                    pred_tracks, pred_visibility = self.model(
+                        video,
+                        queries=queries,
+                        backward_tracking=True
+                    )
+                    return pred_tracks[0].cpu().numpy(), pred_visibility[0].cpu().numpy()
+                
+            except RuntimeError as e:
+                if "CUDA" in str(e):
+                    print(f"CUDA error with batch size {batch_size}, trying smaller batch...")
+                    torch.cuda.empty_cache()  # Clear CUDA memory
+                    continue
+                else:
+                    raise e
+        
+        print("Failed to track with any batch size")
+        return None, None
 
