@@ -44,9 +44,8 @@ class DanceRoomTracker:
         self.current_frame_idx = 0
         self.next_track_id = 0  # For generating unique IDs
         
-        # Replace tracking_points with simple category mapping
+        # Replace tracking_points with simple category mapping - remove floor
         self.point_categories = {
-            'floor': set(),        # Set of point_ids
             'back_wall': set(),
             'left_wall': set(),
             'right_wall': set(),
@@ -359,24 +358,24 @@ class DanceRoomTracker:
                         }
 
     def find_new_points(self):
-        """Find new points and categorize them"""
+        """Find new points and categorize them with a grid sampling technique."""
         MIN_POINTS_PER_SURFACE = 30
-        
-        # Count current visible points per surface
+        GRID_SIZE = 6  # Number of grid cells per row and column
+
+        # Count current visible points per surface - remove floor
         surface_counts = {
-            'floor': 0,
             'back_wall': 0,
             'left_wall': 0,
             'right_wall': 0
         }
-        
+
         for category in surface_counts.keys():
-            surface_counts[category] = sum(1 for pid in self.point_categories[category] 
-                                         if self.point_visibility.get(pid, True))
-        
+            surface_counts[category] = sum(1 for pid in self.point_categories[category]
+                                           if self.point_visibility.get(pid, True))
+
         # Create mask excluding person regions and existing points
         person_mask = np.ones((self.frame_height, self.frame_width), dtype=np.uint8)
-        
+
         # Mask out people and existing points
         poses = self.pose_detections[str(self.current_frame_idx)]
         padding = 5
@@ -387,51 +386,76 @@ class DanceRoomTracker:
             y_min = max(0, int(bbox[1]) - padding)
             y_max = min(self.frame_height, int(bbox[1] + bbox[3]) + padding)
             cv2.rectangle(person_mask, (x_min, y_min), (x_max, y_max), 0, -1)
-        
-        # Find new points only if needed
+
+        # Grid dimensions
+        grid_height = self.frame_height // GRID_SIZE
+        grid_width = self.frame_width // GRID_SIZE
+
+        # Find new points for each category using a grid sampling technique
         for category in surface_counts:
             if surface_counts[category] < MIN_POINTS_PER_SURFACE:
                 gray = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2GRAY)
                 masked_gray = cv2.multiply(gray, person_mask)
 
-                points = cv2.goodFeaturesToTrack(
-                    masked_gray,
-                    maxCorners=MIN_POINTS_PER_SURFACE - surface_counts[category],
-                    qualityLevel=0.005,
-                    minDistance=2,
-                    blockSize=3,
-                    useHarrisDetector=True,
-                    k=0.04,
-                    mask=person_mask
-                )
-                
-                if points is not None:
-                    points = points.reshape(-1, 2)
-                    
-                    for point in points:
-                        intersection = self.virtualRoom.project_point_to_planes(point, self.camera_poses)
-                        if intersection is not None:
-                            surface, world_pos = intersection[0], intersection[1]
-                            if surface == category:
-                                point_id = self.next_track_id
-                                self.next_track_id += 1
-                                
-                                # Add point to category
-                                self.point_categories[category].add(point_id)
-                                self.point_visibility[point_id] = True
-                                
-                                # Store initial world position
-                                self.initial_world_positions[point_id] = (surface, world_pos)
-                                
-                                # Initialize track
-                                track = np.tile(point, (50, 1))
-                                visibility = np.ones(50, dtype=bool)
-                                self.point_tracks[point_id] = {
-                                    'track': track,
-                                    'visibility': visibility,
-                                    'start_frame': self.current_frame_idx,
-                                    'category': category  # Add category to track data
-                                }
+                remaining_points = MIN_POINTS_PER_SURFACE - surface_counts[category]
+                points_per_grid = remaining_points // (GRID_SIZE * GRID_SIZE)
+
+                # Iterate over each grid cell
+                for i in range(GRID_SIZE):
+                    for j in range(GRID_SIZE):
+                        # Define region of interest for this grid cell
+                        x_start = j * grid_width
+                        y_start = i * grid_height
+                        x_end = min((j + 1) * grid_width, self.frame_width)
+                        y_end = min((i + 1) * grid_height, self.frame_height)
+
+                        # Masked region within the grid cell
+                        cell_mask = person_mask[y_start:y_end, x_start:x_end]
+                        cell_gray = masked_gray[y_start:y_end, x_start:x_end]
+
+                        # Detect points within this grid cell
+                        cell_points = cv2.goodFeaturesToTrack(
+                            cell_gray,
+                            maxCorners=points_per_grid,
+                            qualityLevel=0.01,
+                            minDistance=35,
+                            blockSize=3,
+                            useHarrisDetector=True,
+                            k=0.04,
+                            mask=cell_mask
+                        )
+
+                        if cell_points is not None:
+                            cell_points = cell_points.reshape(-1, 2)
+                            for point in cell_points:
+                                # Convert cell point to image coordinates
+                                point[0] += x_start
+                                point[1] += y_start
+
+                                # Project and categorize the point
+                                intersection = self.virtualRoom.project_point_to_planes(point, self.camera_poses)
+                                if intersection is not None:
+                                    surface, world_pos = intersection[0], intersection[1]
+                                    if surface == category:
+                                        point_id = self.next_track_id
+                                        self.next_track_id += 1
+
+                                        # Add point to category
+                                        self.point_categories[category].add(point_id)
+                                        self.point_visibility[point_id] = True
+
+                                        # Store initial world position
+                                        self.initial_world_positions[point_id] = (surface, world_pos)
+
+                                        # Initialize track
+                                        track = np.tile(point, (50, 1))
+                                        visibility = np.ones(50, dtype=bool)
+                                        self.point_tracks[point_id] = {
+                                            'track': track,
+                                            'visibility': visibility,
+                                            'start_frame': self.current_frame_idx,
+                                            'category': category  # Add category to track data
+                                        }
 
     def load_camera_poses(self):
         """Load initial camera poses from JSON if it exists"""
@@ -833,7 +857,7 @@ class DanceRoomTracker:
 
         current_params = self.get_current_camera_params()
 
-        # Collect points for each wall
+        # Collect points for each wall - remove floor
         walls = {
             'back_wall': [],
             'left_wall': [],
@@ -841,7 +865,7 @@ class DanceRoomTracker:
         }
         
         for point_id, (initial_surface, initial_pos) in self.initial_world_positions.items():
-            if initial_surface not in walls:
+            if initial_surface not in walls:  # This will now skip floor points
                 continue
                 
             if not self.point_visibility.get(point_id, False):
