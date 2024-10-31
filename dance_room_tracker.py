@@ -48,9 +48,7 @@ class DanceRoomTracker:
         self.point_categories = {
             'back_wall': set(),
             'left_wall': set(),
-            'right_wall': set(),
-            'lead_extremities': set(),
-            'follow_extremities': set()
+            'right_wall': set()
         }
         
         self.point_visibility = {}  # ID -> bool
@@ -95,70 +93,72 @@ class DanceRoomTracker:
         camera_oriented = False
         poses_selected = self.lead_track_id is not None and self.follow_track_id is not None
         
+        print("\nInitializing tracking...")
+        print(f"Camera oriented: {camera_oriented}")
+        print(f"Poses selected: {poses_selected}")
+        
         # Initial display
         self.update_display(camera_oriented, poses_selected)
         
-        while True:
-            key = cv2.waitKey(0) & 0xFF  # Wait for key event
+        # Step 1: Camera Orientation
+        while not camera_oriented:
+            key = cv2.waitKey(1) & 0xFF
             
-            if not camera_oriented:
-                if key == 13:  # Enter
-                    camera_oriented = True
-                    self.save_camera_poses()
-                    # Store initial rotation and focal length for frame 0
-                    self.frame_rotations[0] = self.camera_poses['rotation'].copy()
-                    self.frame_focal_lengths[0] = self.camera_poses['focal_length']
-                    self.find_new_points()
+            if key == 13:  # Enter
+                camera_oriented = True
+                self.save_camera_poses()
+                # Store initial rotation and focal length for frame 0
+                self.frame_rotations[0] = self.camera_poses['rotation'].copy()
+                self.frame_focal_lengths[0] = self.camera_poses['focal_length']
+                print("Finding initial tracking points...")
+                self.find_new_points()
+                self.update_display(camera_oriented, poses_selected)
+            elif key == 27:  # ESC - return to camera adjustment
+                camera_oriented = False
+            elif key != 255:  # Only handle other keys if they're actually pressed
+                if self.handle_camera_movement(key):
                     self.update_display(camera_oriented, poses_selected)
-                elif key == 27:  # ESC
-                    break
-                else:
-                    if self.handle_camera_movement(key):
-                        self.update_display(camera_oriented, poses_selected)
-            
-            elif not poses_selected:
+        
+        print("Camera oriented, proceeding to pose selection...")
+        
+        # Step 2: Pose Selection (if not already selected)
+        if not poses_selected:
+            self.update_display(True, False)
+            while not poses_selected:
+                key = cv2.waitKey(1) & 0xFF
+                
                 if key == ord('0'):
                     self.lead_track_id = None
                     self.follow_track_id = None
+                    self.update_display(True, False)
+                elif key == 27:  # ESC - return to camera orientation
+                    camera_oriented = False
                     self.update_display(camera_oriented, poses_selected)
-                elif key == 27:  # ESC
                     break
                 elif self.mouse_data.get('clicked', True):
                     # Both poses are now selected
                     self.mouse_data['clicked'] = False
                     poses_selected = True
-                    
-                    # Initialize pose extremity points
-                    self.initialize_pose_extremity_points()
-                    
-                    # Track the initial points
-                    self.track_points_chunk()
-                    
-                    # Save pose assignments
-                    self.save_pose_assignments()
-                    
-                    # Update display with tracking visualization
-                    self.update_display(camera_oriented, poses_selected)
-                    
-                    # Break to move to video loop
-                    break
-            else:
-                if key == ord('0'):
-                    self.lead_track_id = None
-                    self.follow_track_id = None
-                    poses_selected = False
-                    self.point_categories = {k: set() for k in self.point_categories}
-                    self.point_visibility = {}
-                    self.point_tracks = {}
-                    self.update_display(camera_oriented, poses_selected)
-                elif key == 27:  # ESC
-                    break
+
+        # Step 3: Initialize tracking (whether poses were just selected or pre-selected)
+        if poses_selected:
+            print("Running initial point tracking...")
+            success = self.track_points_chunk()  # Check if tracking succeeded
+            if not success:
+                print("Initial tracking failed!")
+                return
+            
+            print("Saving pose assignments...")
+            self.save_pose_assignments()
         
-        cap.release()
-        cv2.destroyAllWindows()
+        print("Starting video loop...")
         
-        if poses_selected:  # Only proceed to video loop if poses were selected
+        # Step 4: Start tracking sequence
+        if camera_oriented and poses_selected:
             self.run_video_loop()
+        else:
+            print("Restarting initialization due to incomplete setup...")
+            self.initialize_tracking()
 
     def update_display(self, camera_oriented, poses_selected):
         """Update display based on current state"""
@@ -197,64 +197,60 @@ class DanceRoomTracker:
 
     def run_video_loop(self):
         """Main video loop"""
+        print("Entering video loop...")
         cap = cv2.VideoCapture(self.video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
         
-        # Initial frame read and display
-        ret, frame = cap.read()
-        if not ret:
-            return
-        
-        self.current_frame = frame
-        self.current_frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
-        self.update_display(True, True)  # Camera oriented and poses selected
+        auto_play = False
         
         while True:
-            key = cv2.waitKey(0) & 0xFF  # Wait for key event
+            if auto_play:
+                key = cv2.waitKey(1) & 0xFF
+            else:
+                key = cv2.waitKey(1) & 0xFF
             
             if key == ord('s'):
                 self.save_camera_tracking()
                 self.save_pose_assignments()
+                print("Saved tracking data")
             
-            elif key == ord('t'):
-                self.track_points_chunk()
+            elif key == ord(' '):  # Toggle auto-play
+                auto_play = not auto_play
+                print(f"Auto-play: {'ON' if auto_play else 'OFF'}")
+            
+            elif key == 83 or auto_play:  # Right arrow or auto-play
+                ret, frame = cap.read()
+                if not ret:
+                    print("End of video reached")
+                    break
+                
+                if self.check_track_discontinuity():
+                    print("Track discontinuity detected")
+                    break
+                
+                self.current_frame = frame
+                self.current_frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+                
+                # Check remaining track length and run new tracking if needed
+                min_future_frames = float('inf')
+                for track_data in self.point_tracks.values():
+                    track_end = track_data['start_frame'] + len(track_data['track'])
+                    remaining_frames = track_end - self.current_frame_idx
+                    min_future_frames = min(min_future_frames, remaining_frames)
+                
+                print(f"\rFrame {self.current_frame_idx}, Future frames: {min_future_frames}", end='', flush=True)
+                
+                if min_future_frames < 10:
+                    print(f"\nRunning new tracking at frame {self.current_frame_idx}")
+                    if not self.track_points_chunk():
+                        print("Tracking failed, stopping")
+                        break
+                
+                self.update_camera_from_tracks()
                 self.update_display(True, True)
             
-            elif key == ord(' '):  # Space - run until next discontinuity
-                while True:
-                    ret, frame = cap.read()
-                    if not ret or self.check_track_discontinuity():
-                        break
-                    self.current_frame = frame
-                    self.current_frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
-                    self.update_camera_from_tracks()
-                    self.update_display(True, True)
-                    if cv2.waitKey(1) & 0xFF == 27:  # Allow ESC to interrupt
-                        break
-            
-            elif key == 83:  # Right arrow - advance exactly one frame
-                ret, frame = cap.read()
-                if ret:
-                    self.current_frame = frame
-                    self.current_frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
-                    self.update_camera_from_tracks()
-                    self.update_display(True, True)
-            
-            elif key == 81:  # Left arrow - review previous frame
-                self.current_frame_idx = max(0, self.current_frame_idx - 1)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
-                ret, frame = cap.read()
-                if ret:
-                    self.current_frame = frame
-                    self.update_display(True, True)
-            
-            elif key == ord('0'):  # Reset pose selection
-                cap.release()
-                cv2.destroyAllWindows()
-                self.initialize_tracking()
-                return
-            
             elif key == 27:  # ESC
+                print("\nExiting video loop...")
                 break
         
         cap.release()
@@ -281,81 +277,80 @@ class DanceRoomTracker:
 
     def track_points_chunk(self):
         """Track points for a 50-frame chunk"""
-        # Prepare points for cotracker with their IDs
-        all_points = []
-        point_mapping = []  # Store point_ids
+        MIN_WALL_POINTS = 20
         
-        # Collect current points from all categories
-        for category in self.point_categories:
-            for point_id in self.point_categories[category]:
-                if self.point_visibility.get(point_id, False):
-                    track_data = self.point_tracks[point_id]
-                    frame_idx = self.current_frame_idx - track_data['start_frame']
-                    if 0 <= frame_idx < len(track_data['track']):
-                        point = track_data['track'][frame_idx]
-                        all_points.append(point)
-                        point_mapping.append(point_id)
+        # Count current valid points
+        valid_points = []
+        point_mapping = []
         
-        if not all_points:
-            return
+        for point_id in self.point_categories['back_wall']:
+            if point_id in self.point_tracks:
+                track_data = self.point_tracks[point_id]
+                frame_idx = self.current_frame_idx - track_data['start_frame']
+                if 0 <= frame_idx < len(track_data['track']):
+                    point = track_data['track'][frame_idx]
+                    valid_points.append(point)
+                    point_mapping.append(point_id)
+        
+        # If we don't have enough points, generate new ones
+        if len(valid_points) < MIN_WALL_POINTS:
+            print(f"\nNot enough valid points ({len(valid_points)}), generating new set")
+            
+            # Clear all existing points
+            self.point_tracks.clear()
+            self.point_categories['back_wall'].clear()
+            self.point_visibility.clear()
+            self.initial_world_positions.clear()
+            
+            # Generate new points
+            self.find_new_points()
+            
+            # Get the new points for tracking
+            valid_points = []
+            point_mapping = []
+            for point_id in self.point_categories['back_wall']:
+                track_data = self.point_tracks[point_id]
+                point = track_data['track'][0]  # New points only have initial position
+                valid_points.append(point)
+                point_mapping.append(point_id)
+        
+        if not valid_points:
+            print("No points to track!")
+            return False
+        
+        print(f"Tracking {len(valid_points)} points from frame {self.current_frame_idx}")
         
         # Track points
         pred_tracks, pred_visibility = self.cotracker.track(
             self.video_path, 
-            all_points,
+            valid_points,
             start_frame=self.current_frame_idx,
             num_frames=50
         )
+        
+        if pred_tracks is None:
+            print("Tracking failed!")
+            return False
+        
+        print(f"Got tracks of shape: {pred_tracks.shape}")
         
         # Update tracks for each point
         for idx, point_id in enumerate(point_mapping):
             point_track = np.array([frame_points[idx] for frame_points in pred_tracks])
             point_visibility = np.array([frame_vis[idx] for frame_vis in pred_visibility])
             
-            if point_visibility[0]:  # Point is visible in current frame
-                if point_id in self.point_tracks:
-                    # Extend existing track
-                    old_track = self.point_tracks[point_id]['track']
-                    old_vis = self.point_tracks[point_id]['visibility']
-                    start_frame = self.point_tracks[point_id]['start_frame']
-                    category = self.point_tracks[point_id]['category']  # Preserve category
-                    
-                    # Calculate frame indices
-                    current_rel_frame = self.current_frame_idx - start_frame
-                    
-                    # If there's a gap, fill it with the last known position
-                    if current_rel_frame > len(old_track):
-                        gap_size = current_rel_frame - len(old_track)
-                        fill_track = np.tile(old_track[-1], (gap_size, 1))
-                        fill_vis = np.zeros(gap_size, dtype=bool)
-                        old_track = np.vstack([old_track, fill_track])
-                        old_vis = np.concatenate([old_vis, fill_vis])
-                    
-                    # Append new track data
-                    new_track = np.vstack([old_track[:current_rel_frame], point_track])
-                    new_vis = np.concatenate([old_vis[:current_rel_frame], point_visibility])
-                    
-                    self.point_tracks[point_id].update({
-                        'track': new_track,
-                        'visibility': new_vis,
-                        'category': category  # Preserve category
-                    })
-                else:
-                    # Should not happen, but handle just in case
-                    # Find category from point_categories
-                    category = None
-                    for cat, points in self.point_categories.items():
-                        if point_id in points:
-                            category = cat
-                            break
-                    
-                    if category:
-                        self.point_tracks[point_id] = {
-                            'track': point_track,
-                            'visibility': point_visibility,
-                            'start_frame': self.current_frame_idx,
-                            'category': category
-                        }
+            # Create new track data
+            self.point_tracks[point_id] = {
+                'track': point_track,
+                'visibility': point_visibility,
+                'start_frame': self.current_frame_idx,
+                'category': 'back_wall'
+            }
+            
+            # Update visibility state based on current frame only
+            self.point_visibility[point_id] = point_visibility[0]
+        
+        return True
 
     def find_new_points(self):
         """Find new points and categorize them with a grid sampling technique."""
@@ -644,63 +639,6 @@ class DanceRoomTracker:
             
         return update
 
-    def initialize_pose_extremity_points(self):
-        """Initialize tracking points for lead and follow pose joints"""
-        poses = self.pose_detections[str(self.current_frame_idx)]
-        
-        # Find lead and follow poses
-        lead_pose = None
-        follow_pose = None
-        for pose in poses:
-            if pose['id'] == self.lead_track_id:
-                lead_pose = np.array(pose['keypoints'])
-            elif pose['id'] == self.follow_track_id:
-                follow_pose = np.array(pose['keypoints'])
-        
-        if lead_pose is None or follow_pose is None:
-            print("Warning: Could not find lead or follow pose")
-            return
-        
-        # Initialize tracking for all joints
-        for idx in self.joint_indices:
-            # Lead joints
-            point = lead_pose[idx][:2]
-            if point[0] != 0 or point[1] != 0:
-                point_id = self.next_track_id
-                self.next_track_id += 1
-                self.point_categories['lead_extremities'].add(point_id)
-                self.point_visibility[point_id] = True
-                
-                # Initialize track
-                track = np.tile(point, (50, 1))
-                visibility = np.ones(50, dtype=bool)
-                self.point_tracks[point_id] = {
-                    'track': track,
-                    'visibility': visibility,
-                    'start_frame': self.current_frame_idx,
-                    'category': 'lead_extremities',  # Add category
-                    'joint_idx': idx  # Also store joint index for pose points
-                }
-            
-            # Follow joints
-            point = follow_pose[idx][:2]
-            if point[0] != 0 or point[1] != 0:
-                point_id = self.next_track_id
-                self.next_track_id += 1
-                self.point_categories['follow_extremities'].add(point_id)
-                self.point_visibility[point_id] = True
-                
-                # Initialize track
-                track = np.tile(point, (50, 1))
-                visibility = np.ones(50, dtype=bool)
-                self.point_tracks[point_id] = {
-                    'track': track,
-                    'visibility': visibility,
-                    'start_frame': self.current_frame_idx,
-                    'category': 'follow_extremities',  # Add category
-                    'joint_idx': idx  # Also store joint index for pose points
-                }
-
     def update_camera_from_tracks(self):
         """Update camera pose using geometric relationships and optimization"""
 
@@ -857,7 +795,7 @@ class DanceRoomTracker:
 
         current_params = self.get_current_camera_params()
 
-        # Collect points for each wall - remove floor
+        # Collect points for each wall - explicitly exclude pose points
         walls = {
             'back_wall': [],
             'left_wall': [],
@@ -865,7 +803,7 @@ class DanceRoomTracker:
         }
         
         for point_id, (initial_surface, initial_pos) in self.initial_world_positions.items():
-            if initial_surface not in walls:  # This will now skip floor points
+            if initial_surface not in walls:  # Skip floor and pose points
                 continue
                 
             if not self.point_visibility.get(point_id, False):
@@ -874,6 +812,7 @@ class DanceRoomTracker:
             # Get current point directly from track data
             if point_id in self.point_tracks:
                 track_data = self.point_tracks[point_id]
+
                 frame_idx = self.current_frame_idx - track_data['start_frame']
                 
                 if 0 <= frame_idx < len(track_data['track']):
@@ -911,9 +850,21 @@ class DanceRoomTracker:
 
     def check_track_discontinuity(self):
         """Check if either lead or follow track is missing in current frame"""
+        # Only check for pose discontinuity if we're beyond the current tracks
+        min_future_frames = float('inf')
+        for track_data in self.point_tracks.values():
+            track_end = track_data['start_frame'] + len(track_data['track'])
+            remaining_frames = track_end - self.current_frame_idx
+            min_future_frames = min(min_future_frames, remaining_frames)
+        
+        # If we still have frames in our tracks, don't check for discontinuity
+        if min_future_frames > 0:
+            return False
+        
+        # Otherwise, check if poses are still visible
         current_poses = self.pose_detections.get(str(self.current_frame_idx), {})
-        return (self.lead_track_id not in current_poses or 
-                self.follow_track_id not in current_poses)
+        return any(pose['id'] == self.lead_track_id or pose['id'] == self.follow_track_id 
+                  for pose in current_poses)
 
     def prepare_display_frame(self):
         """Prepare frame for display during tracking"""
@@ -923,85 +874,82 @@ class DanceRoomTracker:
         display_frame = self.virtualRoom.draw_virtual_room(display_frame, current_params)
         
         point_colors = {
-            'floor': (0, 0, 255),        # Red
             'back_wall': (0, 255, 0),    # Green
             'left_wall': (255, 0, 0),    # Blue
             'right_wall': (255, 255, 0), # Cyan
-            'lead_extremities': (0, 255, 0),  # Green
-            'follow_extremities': (0, 0, 255)  # Red
         }
         
-        # Draw tracks and points
+        # Draw all tracks that include the current frame
         for point_id, track_data in self.point_tracks.items():
-            if self.point_visibility.get(point_id, False):
-                track = track_data['track']
-                visibility = track_data['visibility']
-                start_frame = track_data['start_frame']
-                category = track_data['category']
-                color = point_colors[category]
+            track = track_data['track']
+            visibility = track_data['visibility']
+            start_frame = track_data['start_frame']
+            category = track_data['category']
+            color = point_colors[category]
+            
+            # Calculate frame index within this track
+            track_frame_idx = self.current_frame_idx - start_frame
+            
+            # Only process if this track includes the current frame
+            if 0 <= track_frame_idx < len(track):
+                current_point = track[track_frame_idx]
                 
-                # Calculate current frame index within track
-                track_frame_idx = self.current_frame_idx - start_frame
+                # Draw history (past frames)
+                for i in range(max(0, track_frame_idx - self.track_display_frames), track_frame_idx):
+                    if visibility[i]:
+                        alpha = 0.5 * (1 - (track_frame_idx - i) / self.track_display_frames)
+                        faded_color = tuple(int(c * alpha) for c in color)
+                        pt1 = tuple(map(int, track[i]))
+                        pt2 = tuple(map(int, track[i + 1]))
+                        cv2.line(display_frame, pt1, pt2, faded_color, 1)
                 
-                if 0 <= track_frame_idx < len(track):
-                    current_point = track[track_frame_idx]
-                    
-                    # Draw history (past frames)
-                    for i in range(max(0, track_frame_idx - self.track_display_frames), track_frame_idx):
-                        if visibility[i]:
-                            alpha = 0.5 * (1 - (track_frame_idx - i) / self.track_display_frames)
-                            faded_color = tuple(int(c * alpha) for c in color)
-                            pt1 = tuple(map(int, track[i]))
-                            pt2 = tuple(map(int, track[i + 1]))
-                            cv2.line(display_frame, pt1, pt2, faded_color, 1)
-                    
-                    # Draw future predictions
-                    for i in range(track_frame_idx, min(len(track) - 1, track_frame_idx + self.track_display_frames)):
-                        if visibility[i]:
-                            alpha = 0.5 * (1 - (i - track_frame_idx) / self.track_display_frames)
-                            faded_color = tuple(int(c * alpha) for c in color)
-                            pt1 = tuple(map(int, track[i]))
-                            pt2 = tuple(map(int, track[i + 1]))
-                            cv2.line(display_frame, pt1, pt2, faded_color, 1)
-                    
-                    # Draw current point
-                    pixel_pos = tuple(map(int, current_point))
-                    cv2.circle(display_frame, pixel_pos, 4, color, -1)  # Filled circle
-                    
-                    # If this is a room surface point (not an extremity), draw the initial surface projection
-                    if category in ['floor', 'back_wall', 'left_wall', 'right_wall']:
-                        if point_id in self.initial_world_positions:
-                            initial_surface, initial_world_pos = self.initial_world_positions[point_id]
+                # Draw future predictions
+                for i in range(track_frame_idx, min(len(track) - 1, track_frame_idx + self.track_display_frames)):
+                    if visibility[i]:
+                        alpha = 0.5 * (1 - (i - track_frame_idx) / self.track_display_frames)
+                        faded_color = tuple(int(c * alpha) for c in color)
+                        pt1 = tuple(map(int, track[i]))
+                        pt2 = tuple(map(int, track[i + 1]))
+                        cv2.line(display_frame, pt1, pt2, faded_color, 1)
+                
+                # Draw current point
+                pixel_pos = tuple(map(int, current_point))
+                cv2.circle(display_frame, pixel_pos, 4, color, -1)  # Filled circle
+                
+                # If this is a room surface point, draw the initial surface projection
+                if category in ['back_wall', 'left_wall', 'right_wall']:
+                    if point_id in self.initial_world_positions:
+                        initial_surface, initial_world_pos = self.initial_world_positions[point_id]
+                        
+                        # Project initial world position back using current frame's camera parameters
+                        rotation = Rotation.from_quat(current_params['rotation'])
+                        point_cam = rotation.inv().apply(initial_world_pos - current_params['position'])
+                        
+                        if point_cam[2] > 0:  # Only if point is in front of camera
+                            fx = fy = min(self.frame_height, self.frame_width)
+                            cx, cy = self.frame_width/2, self.frame_height/2
+                            x = -point_cam[0] / point_cam[2]
+                            y = -point_cam[1] / point_cam[2]
+                            proj_x = int(x * fx * current_params['focal_length'] + cx)
+                            proj_y = int(y * fy * current_params['focal_length'] + cy)
                             
-                            # Project initial world position back using current frame's camera parameters
-                            rotation = Rotation.from_quat(current_params['rotation'])
-                            point_cam = rotation.inv().apply(initial_world_pos - current_params['position'])
+                            # Draw open circle for initial surface projection
+                            cv2.circle(display_frame, (proj_x, proj_y), 6, color, 1)
                             
-                            if point_cam[2] > 0:  # Only if point is in front of camera
-                                fx = fy = min(self.frame_height, self.frame_width)
-                                cx, cy = self.frame_width/2, self.frame_height/2
-                                x = -point_cam[0] / point_cam[2]
-                                y = -point_cam[1] / point_cam[2]
-                                proj_x = int(x * fx * current_params['focal_length'] + cx)
-                                proj_y = int(y * fy * current_params['focal_length'] + cy)
-                                
-                                # Draw open circle for initial surface projection
-                                cv2.circle(display_frame, (proj_x, proj_y), 6, color, 1)
-                                
-                                # Draw line between current point and its target position
-                                cv2.line(display_frame, pixel_pos, (proj_x, proj_y), color, 1)
-                    
-                    # Draw point ID
-                    cv2.putText(display_frame, f"{point_id}", 
-                              (pixel_pos[0] + 5, pixel_pos[1] + 5),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, 1)
+                            # Draw line between current point and its target position
+                            cv2.line(display_frame, pixel_pos, (proj_x, proj_y), color, 1)
+                
+                # Draw point ID
+                cv2.putText(display_frame, f"{point_id}", 
+                          (pixel_pos[0] + 5, pixel_pos[1] + 5),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, 1)
         
-        # Add point counts and camera solve status in top-left corner
+        # Add point counts in top-left corner
         y_offset = 30
         cv2.putText(display_frame, f"Frame: {self.current_frame_idx}", 
                    (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         y_offset += 20
-
+        
         for category, points in self.point_categories.items():
             visible_count = sum(1 for pid in points if self.point_visibility.get(pid, False))
             color = point_colors[category]
@@ -1047,3 +995,55 @@ class DanceRoomTracker:
             'rotation': rotation,
             'focal_length': focal_length
         }
+
+    def auto_track_sequence(self):
+        """Automatically track through frames until a discontinuity is found"""
+        cap = cv2.VideoCapture(self.video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret or self.check_track_discontinuity():
+                break
+                
+            self.current_frame = frame
+            self.current_frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+            
+            # Check remaining track length and run new tracking if needed
+            min_future_frames = float('inf')
+            for track_data in self.point_tracks.values():
+                track_end = track_data['start_frame'] + len(track_data['track'])
+                remaining_frames = track_end - self.current_frame_idx
+                min_future_frames = min(min_future_frames, remaining_frames)
+            
+            print(f"Frame {self.current_frame_idx}, Minimum future frames: {min_future_frames}")
+            
+            if min_future_frames < 10:
+                print(f"Running new tracking at frame {self.current_frame_idx}")
+                self.track_points_chunk()
+            
+            self.update_camera_from_tracks()
+            self.update_display(True, True)
+            
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('s'):
+                self.save_camera_tracking()
+                self.save_pose_assignments()
+            elif key == 27:  # ESC
+                break
+        
+        cap.release()
+
+    def should_add_new_points(self):
+        """Check if we need to add new tracking points"""
+        # Get minimum remaining future frames across all tracks
+        min_future_frames = float('inf')
+        current_time = self.current_frame_idx
+        
+        for track_data in self.point_tracks.values():
+            track_end = track_data['start_frame'] + len(track_data['track'])
+            remaining_frames = track_end - current_time
+            min_future_frames = min(min_future_frames, remaining_frames)
+        
+        print(f"Minimum future frames: {min_future_frames}")
+        return min_future_frames < 10

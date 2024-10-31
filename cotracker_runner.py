@@ -53,7 +53,7 @@ class CoTracker:
             queries[0, i] = torch.tensor([0, x, y])
 
         # Try tracking with different batch sizes
-        batch_sizes = [50, 25, 10, 5]  # Progressively smaller batch sizes
+        batch_sizes = [50, 25, 12]  # Progressively smaller batch sizes
         
         for batch_size in batch_sizes:
             try:
