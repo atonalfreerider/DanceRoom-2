@@ -17,7 +17,7 @@ def main(video_path, output_dir):
 
     # Initialize room tracking and dancer selection
     danceRoomTracker = dance_room_tracker.DanceRoomTracker(video_path, output_dir)
-    danceRoomTracker.initialize_tracking()  # New method for the updated workflow
+    danceRoomTracker.run_video_loop()  # New method for the updated workflow
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process video for person segmentation and room orientation.")

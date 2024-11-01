@@ -56,7 +56,7 @@ class PointTracker:
 
             if min_future_frames < 10:
                 print(f"\nRunning new tracking at frame {self.current_frame_idx}")
-                if not self.track_points_chunk(None): #TODO send camera_poses
+                if not self.track_points_chunk(None): #TODO send initial_camera_pose
                     print("Tracking failed, stopping")
                     break
 
