@@ -1,6 +1,8 @@
 import numpy as np
 import cv2
 from scipy.spatial.transform import Rotation
+import os
+import json
 
 import utils
 from virtual_room import VirtualRoom
@@ -127,6 +129,7 @@ class DanceRoomTracker:
         
         # Step 4: Start tracking sequence
         if camera_oriented and poses_selected:
+            self.process_vo_data()
             self.run_video_loop()
         else:
             print("Restarting initialization due to incomplete setup...")
@@ -476,4 +479,45 @@ class DanceRoomTracker:
             'focal_length': focal_length
         }
 
+    def load_vo_data(self):
+        """Load visual odometry data from json"""
+        # Construct VO json path
+        video_name = os.path.splitext(os.path.basename(self.video_path))[0]
+        vo_path = os.path.join(self.output_dir, f"{video_name}_vo.json")
+        
+        try:
+            with open(vo_path, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(f"Warning: No VO data found at {vo_path}")
+            return None
 
+    def process_vo_data(self):
+        """Process visual odometry data after camera calibration"""
+        vo_data = self.load_vo_data()
+        if not vo_data:
+            return
+
+        # Get initial camera state
+        initial_rotation = Rotation.from_quat(self.camera_poses['rotation'])
+        initial_focal = self.camera_poses['focal_length']
+        initial_z = vo_data[0][2]  # Initial z position from VO
+
+        # Process each frame
+        for frame_idx, frame_data in enumerate(vo_data):
+            # Extract position and rotation from VO data
+            pos = np.array(frame_data[:3])
+            vo_rotation = Rotation.from_quat(frame_data[3:])
+
+            # Transform rotation relative to initial camera rotation
+            # Invert the VO rotation to correct the reversed motions
+            relative_rotation = initial_rotation * vo_rotation.inv()
+            self.frame_rotations[frame_idx] = relative_rotation.as_quat()
+
+            # Convert z-translation to focal length change (10:1 ratio)
+            z_delta = pos[2] - initial_z
+            focal_delta = z_delta * 0.1
+            self.frame_focal_lengths[frame_idx] = initial_focal + focal_delta
+
+        # Save updated tracking data
+        self.save_camera_tracking()
