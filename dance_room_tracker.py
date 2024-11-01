@@ -504,17 +504,40 @@ class DanceRoomTracker:
         initial_z = vo_data[0][2]  # Initial z position from VO
 
         # Process each frame
-        for frame_idx, frame_data in enumerate(vo_data):
-            # Extract position and rotation from VO data
-            pos = np.array(frame_data[:3])
+        window_size = 20
+        raw_rotations = []  # Store raw rotation matrices for smoothing
+
+        # First pass: calculate raw rotations
+        for frame_data in vo_data:
             vo_rotation = Rotation.from_quat(frame_data[3:])
-
-            # Transform rotation relative to initial camera rotation
-            # Invert the VO rotation to correct the reversed motions
             relative_rotation = initial_rotation * vo_rotation.inv()
-            self.frame_rotations[frame_idx] = relative_rotation.as_quat()
+            raw_rotations.append(relative_rotation.as_matrix())
 
-            # Convert z-translation to focal length change (10:1 ratio)
+        # Apply moving average smoothing to rotation matrices
+        smoothed_rotations = []
+        for i in range(len(raw_rotations)):
+            # Calculate window bounds
+            start_idx = max(0, i - window_size // 2)
+            end_idx = min(len(raw_rotations), i + window_size // 2)
+            
+            # Get window of rotation matrices
+            window = raw_rotations[start_idx:end_idx]
+            
+            # Average the rotation matrices
+            avg_matrix = np.mean(window, axis=0)
+            
+            # Project back to valid rotation matrix using SVD
+            u, _, vh = np.linalg.svd(avg_matrix)
+            smoothed_matrix = u @ vh
+            smoothed_rotations.append(Rotation.from_matrix(smoothed_matrix))
+
+        # Second pass: store smoothed rotations and process focal lengths
+        for frame_idx, frame_data in enumerate(vo_data):
+            # Store smoothed rotation
+            self.frame_rotations[frame_idx] = smoothed_rotations[frame_idx].as_quat()
+
+            # Process focal length as before
+            pos = np.array(frame_data[:3])
             z_delta = pos[2] - initial_z
             focal_delta = z_delta * 0.1
             self.frame_focal_lengths[frame_idx] = initial_focal + focal_delta
