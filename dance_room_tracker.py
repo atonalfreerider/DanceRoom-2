@@ -1,6 +1,6 @@
 import numpy as np
 import cv2
-from scipy.spatial.transform import Rotation
+from scipy.spatial.transform import Rotation, Slerp
 import os
 import json
 
@@ -35,7 +35,9 @@ class DanceRoomTracker:
         self.current_frame_idx = 0
 
         # Load VO data at startup
-        self.vo_data = self.load_vo_data()
+        self.vo_data = None
+        if tracking_data is None:
+            self.vo_data = self.load_vo_data()
         
         # Add tracking for keypoints
         self.rotation_keypoints = {}  # frame_idx -> rotation quaternion
@@ -49,12 +51,198 @@ class DanceRoomTracker:
         self.frame_height, self.frame_width = None, None
         self.current_frame = None
 
+        # Add timeline UI properties
+        self.timeline_height = 50
+        self.timeline_margin = 20
+        self.scrubber_width = 10
+        self.total_frames = self.get_total_frames()
+        
+        # Track if we're dragging the timeline
+        self.dragging_timeline = False
+        self.mouse_x = 0
+        self.mouse_y = 0
+
+        # Add variables to track pre-movement state
+        self.pre_movement_rotation = None
+        self.pre_movement_focal = None
+        self.camera_has_moved = False
+
+    def draw_timeline(self, frame):
+        """Draw timeline scrubber with keyframe markers"""
+        h, w = frame.shape[:2]
+        timeline_y = h - self.timeline_height
+        
+        # Draw timeline background
+        cv2.rectangle(frame, 
+                     (self.timeline_margin, timeline_y),
+                     (w - self.timeline_margin, h - self.timeline_margin),
+                     (50, 50, 50), -1)
+        
+        # Draw keyframe markers
+        timeline_width = w - 2 * self.timeline_margin
+        for keyframe in sorted(self.rotation_keypoints.keys()):
+            x = int(self.timeline_margin + (keyframe / self.total_frames) * timeline_width)
+            cv2.rectangle(frame,
+                         (x - 2, timeline_y),
+                         (x + 2, h - self.timeline_margin),
+                         (0, 128, 255), -1)
+        
+        # Draw current frame marker
+        current_x = int(self.timeline_margin + 
+                       (self.current_frame_idx / self.total_frames) * timeline_width)
+        cv2.rectangle(frame,
+                     (current_x - self.scrubber_width//2, timeline_y),
+                     (current_x + self.scrubber_width//2, h - self.timeline_margin),
+                     (0, 255, 0), -1)
+    
+    def timeline_click_to_frame(self, x, y):
+        """Convert timeline click to frame number"""
+        timeline_y = self.frame_height - self.timeline_height
+        if y < timeline_y:
+            return None
+            
+        timeline_width = self.frame_width - 2 * self.timeline_margin
+        relative_x = x - self.timeline_margin
+        if 0 <= relative_x <= timeline_width:
+            return int((relative_x / timeline_width) * self.total_frames)
+        return None
+
+    @staticmethod
+    def interpolate_error_ratio(ratio, t):
+        """
+        Interpolate error ratio towards 1.0 based on distance (t).
+        t=1 means use full ratio, t=0 means no change (1.0)
+        """
+        return 1.0 + (ratio - 1.0) * t
+
+    @staticmethod
+    def calculate_rotation_error(old_rot, new_rot):
+        """
+        Calculate rotation error as a single quaternion transformation.
+        Returns the quaternion that transforms old_rot to new_rot.
+        """
+        # Convert to Rotation objects if they aren't already
+        old_r = Rotation.from_quat(old_rot)
+        new_r = Rotation.from_quat(new_rot)
+        
+        # Calculate the difference rotation (error)
+        # error_rot = new_rot * old_rot^(-1)
+        error_rot = new_r * old_r.inv()
+        
+        return error_rot.as_quat()
+
+    @staticmethod
+    def interpolate_rotation(error_quat, t):
+        """
+        Interpolate rotation error based on distance (t).
+        t=1 means use full rotation, t=0 means no rotation
+        """
+        # Create array of rotations for slerp
+        rotations = Rotation.from_quat(np.array([[0, 0, 0, 1], error_quat]))  # Array of two quaternions
+        
+        # Use slerp to interpolate between identity (no rotation) and error rotation
+        interpolated = Slerp([0, 1], rotations)(t)
+        
+        return interpolated.as_quat()
+
+    def warp(self):
+        print(f"Creating keyframe at frame {self.current_frame_idx}")
+
+        # Calculate rotation error as single quaternion transformation
+        rotation_error = self.calculate_rotation_error(
+            self.pre_movement_rotation,
+            self.frame_rotations[self.current_frame_idx]
+        )
+        focal_ratio = self.frame_focal_lengths[self.current_frame_idx] / self.pre_movement_focal
+
+        print(f"Rotation error quat: {rotation_error}")
+        print(f"Focal ratio: {focal_ratio}")
+
+        # Store as keypoint
+        self.rotation_keypoints[self.current_frame_idx] = self.frame_rotations[self.current_frame_idx].copy()
+        self.focal_keypoints[self.current_frame_idx] = self.frame_focal_lengths[self.current_frame_idx]
+
+        # Get sorted keyframes
+        keyframes = sorted(self.rotation_keypoints.keys())
+        new_kf_index = keyframes.index(self.current_frame_idx)
+
+        # Warp frames between previous keyframe and this one
+        if new_kf_index > 0:
+            prev_keyframe = keyframes[new_kf_index - 1]
+            for frame in range(prev_keyframe + 1, self.current_frame_idx):
+                # Calculate interpolation factor (0 at prev keyframe, 1 at new keyframe)
+                t = (frame - prev_keyframe) / (self.current_frame_idx - prev_keyframe)
+
+                # Get current frame's rotation
+                frame_rot = Rotation.from_quat(self.frame_rotations[frame])
+                
+                # Get interpolated error rotation
+                interpolated_error = Rotation.from_quat(self.interpolate_rotation(rotation_error, t))
+                
+                # Apply interpolated error to frame's rotation
+                new_rot = interpolated_error * frame_rot
+                
+                # Store warped values
+                self.frame_rotations[frame] = new_rot.as_quat()
+
+                # Apply interpolated focal length adjustment
+                focal_t = self.interpolate_error_ratio(focal_ratio, t)
+                self.frame_focal_lengths[frame] *= focal_t
+
+        # If there's a next keyframe, warp frames between this one and next
+        if new_kf_index < len(keyframes) - 1:
+            next_keyframe = keyframes[new_kf_index + 1]
+            for frame in range(self.current_frame_idx + 1, next_keyframe):
+                # Calculate reverse interpolation factor (1 at new keyframe, 0 at next keyframe)
+                t = 1.0 - ((frame - self.current_frame_idx) / (next_keyframe - self.current_frame_idx))
+
+                # Get current frame's rotation
+                frame_rot = Rotation.from_quat(self.frame_rotations[frame])
+                
+                # Get interpolated error rotation
+                interpolated_error = Rotation.from_quat(self.interpolate_rotation(rotation_error, t))
+                
+                # Apply interpolated error to frame's rotation
+                new_rot = interpolated_error * frame_rot
+                
+                # Store warped values
+                self.frame_rotations[frame] = new_rot.as_quat()
+
+                # Apply interpolated focal length adjustment
+                focal_t = self.interpolate_error_ratio(focal_ratio, t)
+                self.frame_focal_lengths[frame] *= focal_t
+
     def run_video_loop(self):
-        """New initialization workflow"""
+        """Updated video loop with timeline interaction"""
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
             raise ValueError("Could not open video file")
-
+            
+        # Setup mouse callback
+        def mouse_callback(event, x, y, flags, param):
+            if event == cv2.EVENT_LBUTTONDOWN:
+                frame_idx = self.timeline_click_to_frame(x, y)
+                if frame_idx is not None:
+                    self.dragging_timeline = True
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, self.current_frame = cap.read()
+                    self.current_frame_idx = frame_idx
+                    self.update_display(True)
+            
+            elif event == cv2.EVENT_MOUSEMOVE and self.dragging_timeline:
+                frame_idx = self.timeline_click_to_frame(x, y)
+                if frame_idx is not None:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, self.current_frame = cap.read()
+                    self.current_frame_idx = frame_idx
+                    self.update_display(True)
+            
+            elif event == cv2.EVENT_LBUTTONUP:
+                self.dragging_timeline = False
+        
+        cv2.namedWindow('Dance Room Tracker')
+        cv2.setMouseCallback('Dance Room Tracker', mouse_callback)
+        
         # Read first frame
         ret, frame = cap.read()
         if not ret:
@@ -77,14 +265,23 @@ class DanceRoomTracker:
             
             if key == ord('s'):
                 self.save_camera_tracking()
-                self.save_pose_assignments()
                 print("Saved tracking data")
             
             elif key == ord(' '):  # Toggle play/pause
                 playing = not playing
                 print(f"Playback: {'Playing' if playing else 'Paused'}")
+                self.camera_has_moved = False  # Reset movement flag when playing/pausing
             
-            elif key == 83 or playing:
+            elif key == 13:  # Enter key - create new keyframe
+                if self.current_frame_idx > 0 and self.camera_has_moved:  # Only if camera has moved
+                    self.warp()
+                    
+                    print(f"Created keyframe and warped surrounding frames")
+                    self.update_display(True)
+                    self.save_camera_tracking()
+                    self.camera_has_moved = False  # Reset movement flag
+
+            elif key == 83 or playing: # FORWARD
                 ret, frame = cap.read()
                 if not ret:
                     print("End of video reached")
@@ -92,30 +289,26 @@ class DanceRoomTracker:
                 
                 self.current_frame = frame
                 self.current_frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
-                self.update_display(not playing)  # Show controls when paused
+                self.update_display(not playing)
+                self.camera_has_moved = False  # Reset movement flag when changing frames
             
-            elif key == 81:
-                # Move back one frame
+            elif key == 81:  # REVERSE
                 current_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
-                new_pos = max(0, current_pos - 2)  # -2 because we'll read forward one frame
+                new_pos = max(0, current_pos - 2)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, new_pos)
                 ret, frame = cap.read()
                 if ret:
                     self.current_frame = frame
                     self.current_frame_idx = new_pos
                     self.update_display(not playing)
-            
+                    self.camera_has_moved = False  # Reset movement flag when changing frames
+
             elif not playing:  # Handle inputs when paused
                 if self.handle_camera_movement(key):
-                    # Camera was adjusted, store new keypoint and interpolate
-                    if self.current_frame_idx > 0:  # Only store if not frame 0
-                        self.rotation_keypoints[self.current_frame_idx] = self.frame_rotations[self.current_frame_idx].copy()
-                        self.focal_keypoints[self.current_frame_idx] = self.frame_focal_lengths[self.current_frame_idx]
-                        self.interpolate_between_keypoints(self.current_frame_idx)
+                    self.camera_has_moved = True
                     self.update_display(True)
             
             elif key == 27:  # ESC
-                print("\nExiting video loop...")
                 break
         
         cap.release()
@@ -124,29 +317,38 @@ class DanceRoomTracker:
     #region DRAW
 
     def update_display(self, paused):
-        """Update display based on current state"""
+        """Update display with current frame and overlays"""
         display_frame = self.current_frame.copy()
-
-        # Get current camera parameters
+        
+        # Draw virtual room with current frame's rotation and focal length
         display_frame = self.virtualRoom.draw_virtual_room(
             display_frame,
             self.initial_camera_pose['position'],
             self.frame_rotations[self.current_frame_idx],
             self.frame_focal_lengths[self.current_frame_idx]
         )
-
+        
         # Add UI text
         if paused:
             if self.current_frame_idx == 0:
-                cv2.putText(display_frame, "WASD: Move camera | QE: Up/Down | Arrows: Pan/Tilt | OP: Roll | ZX: Zoom",
-                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.putText(display_frame, 
+                           "WASD: Move camera | QE: Up/Down | Arrows: Pan/Tilt | OP: Roll | ZX: Zoom",
+                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             else:
-                cv2.putText(display_frame, "Arrows: Pan/Tilt | OP: Roll | ZX: Zoom",
-                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-        cv2.putText(display_frame, f"Frame: {self.current_frame_idx}",
+                cv2.putText(display_frame, 
+                           "Arrows: Pan/Tilt | OP: Roll | ZX: Zoom | Enter: Set Keyframe",
+                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Draw frame counter and keyframe indicator
+        text = f"Frame: {self.current_frame_idx}"
+        if self.current_frame_idx in self.rotation_keypoints:
+            text += " (Keyframe)"
+        cv2.putText(display_frame, text,
                     (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
+        
+        # Draw timeline
+        self.draw_timeline(display_frame)
+        
         cv2.imshow('Dance Room Tracker', display_frame)
 
     def prepare_display_frame(self):
@@ -167,42 +369,6 @@ class DanceRoomTracker:
 
         return display_frame
 
-    @staticmethod
-    def draw_pose(image, keypoints, color, is_lead_or_follow=False):
-        connections = [
-            (0, 1), (0, 2), (1, 3), (2, 4),  # Head
-            (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),  # Arms
-            (5, 11), (6, 12), (11, 13), (12, 14), (13, 15), (14, 16)  # Legs
-        ]
-
-        def is_valid_point(point):
-            return point[0] != 0 or point[1] != 0
-
-        for connection in connections:
-            start_point = keypoints[connection[0]][:2]
-            end_point = keypoints[connection[1]][:2]
-            if is_valid_point(start_point) and is_valid_point(end_point):
-                cv2.line(image, tuple(map(int, start_point)), tuple(map(int, end_point)), color, 2)
-
-        for point in keypoints:
-            if is_valid_point(point[:2]):
-                cv2.circle(image, tuple(map(int, point[:2])), 3, color, -1)
-
-        if is_lead_or_follow:
-            # Draw 'L' on left side
-            left_shoulder = keypoints[5][:2]
-            left_hip = keypoints[11][:2]
-            if is_valid_point(left_shoulder) and is_valid_point(left_hip):
-                mid_point = ((left_shoulder[0] + left_hip[0]) // 2, (left_shoulder[1] + left_hip[1]) // 2)
-                cv2.putText(image, 'L', tuple(map(int, mid_point)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-            # Draw 'R' on right side
-            right_shoulder = keypoints[6][:2]
-            right_hip = keypoints[12][:2]
-            if is_valid_point(right_shoulder) and is_valid_point(right_hip):
-                mid_point = ((right_shoulder[0] + right_hip[0]) // 2, (right_shoulder[1] + right_hip[1]) // 2)
-                cv2.putText(image, 'R', tuple(map(int, mid_point)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
     #endregion
 
     #region CAMERA
@@ -218,50 +384,53 @@ class DanceRoomTracker:
 
     def _handle_full_camera_movement(self, key):
         """Handle only rotation and focal length changes"""
+
         rot_delta = 0.005
         focal_delta = 0.01
-        current_rotation = Rotation.from_quat(self.frame_rotations[self.current_frame_idx])
-        current_focal_length = self.frame_focal_lengths[self.current_frame_idx]
-
+        pos_delta = 0.1
+        current_position = None
+        current_rotation = None
+        current_focal_length = None
         update = False
-        if key == ord('z'):  # Increase focal length
+
+        if key == ord('w') or key == ord('s') or key == ord('a') or key == ord('d') or key == ord('q') or key == ord('e') or key == ord('j') or key == ord('k') or key == ord('i') or key == ord('l') or key == ord('z') or key == ord('x') or key == ord('o') or key == ord('p'):
+            update = True
+            current_position = self.initial_camera_pose['position']
+            current_rotation = self.initial_camera_pose['rotation']
+            current_focal_length = self.initial_camera_pose['focal_length']
+
+        if key == ord('w'):
+            self.initial_camera_pose['position'][2] = current_position[2] + pos_delta
+        elif key == ord('z'):  # Increase focal length
             self.frame_focal_lengths[self.current_frame_idx] = current_focal_length + focal_delta
             self.initial_camera_pose['focal_length'] = self.frame_focal_lengths[self.current_frame_idx]
-            update = True
         elif key == ord('x'):  # Decrease focal length
             self.frame_focal_lengths[self.current_frame_idx] = max(0.1, current_focal_length - focal_delta)
             self.initial_camera_pose['focal_length'] = self.frame_focal_lengths[self.current_frame_idx]
-            update = True
         elif key == ord('i'):  # Up arrow (tilt up)
             rot = Rotation.from_euler('x', -rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
             self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
-            update = True
         elif key == ord('k'):  # Down arrow (tilt down)
             rot = Rotation.from_euler('x', rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
             self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
-            update = True
         elif key == ord('j'):  # Left arrow (pan left)
             rot = Rotation.from_euler('y', -rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
             self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
-            update = True
         elif key == ord('l'):  # Right arrow (pan right)
             rot = Rotation.from_euler('y', rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
             self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
-            update = True
         elif key == ord('o'):  # Roll counter-clockwise
             rot = Rotation.from_euler('z', -rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
             self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
-            update = True
         elif key == ord('p'):  # Roll clockwise
             rot = Rotation.from_euler('z', rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
             self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
-            update = True
 
         if update:
             self.save_initial_camera_pose()
@@ -272,151 +441,43 @@ class DanceRoomTracker:
         """Handle only rotation and focal length changes"""
         rot_delta = 0.005
         focal_delta = 0.01
-        current_rotation = Rotation.from_quat(self.frame_rotations[self.current_frame_idx])
-        current_focal_length = self.frame_focal_lengths[self.current_frame_idx]
 
+        current_rotation = None
+        current_focal_length = None
         update = False
+
+        if key == ord('j') or key == ord('k') or key == ord('i') or key == ord('l') or key == ord('z') or key == ord('x') or key == ord('o') or key == ord('p'):
+            current_rotation = Rotation.from_quat(self.frame_rotations[self.current_frame_idx])
+            current_focal_length = self.frame_focal_lengths[self.current_frame_idx]
+            update = True
+            if not self.camera_has_moved:
+                self.pre_movement_rotation = self.frame_rotations[self.current_frame_idx].copy()
+                self.pre_movement_focal = self.frame_focal_lengths[self.current_frame_idx]
+
         if key == ord('z'):  # Increase focal length
             self.frame_focal_lengths[self.current_frame_idx] = current_focal_length + focal_delta
-            update = True
         elif key == ord('x'):  # Decrease focal length
             self.frame_focal_lengths[self.current_frame_idx] = max(0.1, current_focal_length - focal_delta)
-            update = True
         elif key == ord('i'):  # Up arrow (tilt up)
             rot = Rotation.from_euler('x', -rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            update = True
         elif key == ord('k'):  # Down arrow (tilt down)
             rot = Rotation.from_euler('x', rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            update = True
         elif key == ord('j'):  # Left arrow (pan left)
             rot = Rotation.from_euler('y', -rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            update = True
         elif key == ord('l'):  # Right arrow (pan right)
             rot = Rotation.from_euler('y', rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            update = True
         elif key == ord('o'):  # Roll counter-clockwise
             rot = Rotation.from_euler('z', -rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            update = True
         elif key == ord('p'):  # Roll clockwise
             rot = Rotation.from_euler('z', rot_delta)
             self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            update = True
 
         return update
-
-    @staticmethod
-    def slerp(t, q0, q1):
-        """
-        Perform spherical linear interpolation between two quaternions.
-
-        Parameters:
-        - t: Interpolation factor, should be between 0 and 1.
-        - q0, q1: scipy Rotation objects representing the start and end orientations.
-
-        Returns:
-        - Interpolated quaternion as a numpy array [w, x, y, z].
-        """
-        # Convert Rotation objects to quaternions
-        q0 = q0.as_quat()
-        q1 = q1.as_quat()
-
-        # Normalize the quaternions to be sure
-        q0 = q0 / np.linalg.norm(q0)
-        q1 = q1 / np.linalg.norm(q1)
-
-        # Compute the dot product (cosine of the angle between them)
-        dot_product = np.dot(q0, q1)
-
-        # If the dot product is negative, invert one of the quaternions
-        # to take the shortest path
-        if dot_product < 0.0:
-            q1 = -q1
-            dot_product = -dot_product
-
-        # Clamp dot_product to avoid numerical errors leading to values outside [-1, 1]
-        dot_product = np.clip(dot_product, -1.0, 1.0)
-
-        # Calculate the angle between the quaternions
-        theta_0 = np.arccos(dot_product)  # Initial angle
-        theta = theta_0 * t  # Interpolated angle
-
-        # Compute the two quaternion scales
-        sin_theta_0 = np.sin(theta_0)
-        if sin_theta_0 < 1e-6:
-            # If the angle is small, use linear interpolation to avoid division by zero
-            q_interp = (1 - t) * q0 + t * q1
-        else:
-            sin_theta = np.sin(theta)
-            scale_0 = np.cos(theta) - dot_product * sin_theta / sin_theta_0
-            scale_1 = sin_theta / sin_theta_0
-            q_interp = scale_0 * q0 + scale_1 * q1
-
-        # Normalize the result
-        q_interp = q_interp / np.linalg.norm(q_interp)
-
-        # Return as a Rotation object
-        return Rotation.from_quat(q_interp)
-
-    def interpolate_between_keypoints(self, new_keyframe_idx):
-        """Interpolate camera parameters when a new keypoint is added"""
-        if new_keyframe_idx == 0:
-            return  # No interpolation needed for frame 0
-
-        keyframes = sorted(self.rotation_keypoints.keys())
-        new_kf_index = keyframes.index(new_keyframe_idx)
-        
-        # Get previous keyframe
-        prev_keyframe = keyframes[new_kf_index - 1]
-        
-        # Get next keyframe if it exists
-        next_keyframe = None
-        if new_kf_index < len(keyframes) - 1:
-            next_keyframe = keyframes[new_kf_index + 1]
-        
-        # Interpolate between previous and new keyframe
-        self.interpolate_range(prev_keyframe, new_keyframe_idx)
-        
-        # If there's a next keyframe, interpolate between new and next
-        if next_keyframe is not None:
-            self.interpolate_range(new_keyframe_idx, next_keyframe)
-        else:
-            # Interpolate from new keyframe to end of video
-            self.interpolate_to_end(new_keyframe_idx)
-
-    def interpolate_range(self, start_frame, end_frame):
-        """Interpolate camera parameters between two keyframes"""
-        start_rot = Rotation.from_quat(self.rotation_keypoints[start_frame])
-        end_rot = Rotation.from_quat(self.rotation_keypoints[end_frame])
-        start_focal = self.focal_keypoints[start_frame]
-        end_focal = self.focal_keypoints[end_frame]
-        
-        for frame in range(start_frame + 1, end_frame):
-            t = (frame - start_frame) / (end_frame - start_frame)
-            
-            # Interpolate rotation
-            interpolated_rot = self.slerp(t, start_rot, end_rot)
-            self.frame_rotations[frame] = interpolated_rot.as_quat()
-            
-            # Interpolate focal length
-            self.frame_focal_lengths[frame] = start_focal * (1 - t) + end_focal * t
-
-    def interpolate_to_end(self, start_frame):
-        """Interpolate camera parameters from last keyframe to end of video"""
-        if not self.vo_data:
-            return
-            
-        start_rot = Rotation.from_quat(self.rotation_keypoints[start_frame])
-        start_focal = self.focal_keypoints[start_frame]
-        
-        # Use VO data to determine end of video
-        for frame in range(start_frame + 1, len(self.vo_data)):
-            self.frame_rotations[frame] = start_rot.as_quat()
-            self.frame_focal_lengths[frame] = start_focal
 
     #endregion
 
@@ -521,10 +582,22 @@ class DanceRoomTracker:
             # Process focal length as before
             pos = np.array(frame_data[:3])
             z_delta = pos[2] - initial_z
-            focal_delta = z_delta * 0.2 # RATIO of Z to Focal Length
+            focal_delta = z_delta * 0.7  # RATIO of Z to Focal Length
             self.frame_focal_lengths[frame_idx] = initial_focal + focal_delta
+
+        # Automatically create a keyframe at the last frame
+        last_frame = len(vo_data) - 1
+        self.rotation_keypoints[last_frame] = self.frame_rotations[last_frame].copy()
+        self.focal_keypoints[last_frame] = self.frame_focal_lengths[last_frame]
 
         # Save updated tracking data
         self.save_camera_tracking()
+
+    def get_total_frames(self):
+        """Get total number of frames in video"""
+        cap = cv2.VideoCapture(self.video_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        return total
 
     # endregion
