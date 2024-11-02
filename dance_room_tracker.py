@@ -14,7 +14,6 @@ class DanceRoomTracker:
         self.output_dir = output_dir
         self.initial_camera_pose_json_path = output_dir + '/initial_camera_pose.json'
         self.camera_tracking_json_path = output_dir + '/camera_tracking.json'
-        self.pose_assignments_json_path = output_dir + '/pose_assignments.json'
         
         # Load initial camera pose (position and initial orientation/focal)
         self.initial_camera_pose = self.load_initial_camera_pose()
@@ -30,18 +29,12 @@ class DanceRoomTracker:
             self.frame_rotations[frame_idx] = np.array(data['rotation'])
             self.frame_focal_lengths[frame_idx] = data['focal_length']
 
-        # Load pose assignments if exists
-        pose_assignments = utils.load_json(self.pose_assignments_json_path) or {}
-        self.lead_track_id = pose_assignments.get('lead')
-        self.follow_track_id = pose_assignments.get('follow')
-        
         self.virtualRoom = VirtualRoom()
         
         # Tracking state
         self.current_frame_idx = 0
 
-        # Load pose detections and VO data at startup
-        self.pose_detections = utils.load_json(f"{output_dir}/detections.json")
+        # Load VO data at startup
         self.vo_data = self.load_vo_data()
         
         # Add tracking for keypoints
@@ -55,8 +48,6 @@ class DanceRoomTracker:
 
         self.frame_height, self.frame_width = None, None
         self.current_frame = None
-        
-        self.mouse_data = {'clicked': False}
 
     def run_video_loop(self):
         """New initialization workflow"""
@@ -75,7 +66,6 @@ class DanceRoomTracker:
 
         # Create window and set mouse callback
         cv2.namedWindow('Dance Room Tracker')
-        cv2.setMouseCallback('Dance Room Tracker', self.mouse_callback)
         self.process_vo_data()
 
         self.update_display(True)
@@ -145,10 +135,6 @@ class DanceRoomTracker:
             self.frame_focal_lengths[self.current_frame_idx]
         )
 
-        # Draw poses
-        display_frame = self.draw_poses(display_frame,
-                                        show_all=(paused and not (self.lead_track_id and self.follow_track_id)))
-
         # Add UI text
         if paused:
             if self.current_frame_idx == 0:
@@ -157,10 +143,6 @@ class DanceRoomTracker:
             else:
                 cv2.putText(display_frame, "Arrows: Pan/Tilt | OP: Roll | ZX: Zoom",
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-            if not (self.lead_track_id and self.follow_track_id):
-                cv2.putText(display_frame, "Left click: Select lead | Right click: Select follow",
-                            (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         cv2.putText(display_frame, f"Frame: {self.current_frame_idx}",
                     (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
@@ -220,92 +202,6 @@ class DanceRoomTracker:
             if is_valid_point(right_shoulder) and is_valid_point(right_hip):
                 mid_point = ((right_shoulder[0] + right_hip[0]) // 2, (right_shoulder[1] + right_hip[1]) // 2)
                 cv2.putText(image, 'R', tuple(map(int, mid_point)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-    def draw_poses(self, frame, show_all=True):
-        """Draw all detected poses or only selected poses with track IDs"""
-        poses = self.pose_detections[str(self.current_frame_idx)]
-        
-        for pose in poses:
-            keypoints = np.array(pose['keypoints'])
-            track_id = pose['id']
-            
-            # Skip if not showing all and this isn't a selected pose
-            if not show_all and track_id not in [self.lead_track_id, self.follow_track_id]:
-                continue
-            
-            # Determine color based on role
-            if track_id == self.lead_track_id:
-                color = (204, 102, 0)  # Green for lead
-            elif track_id == self.follow_track_id:
-                color = (127, 0, 255)  # Red for follow
-            else:
-                color = (128, 128, 128)  # Gray for unselected poses
-            
-            # Draw pose
-            self.draw_pose(frame, keypoints, color, 
-                          is_lead_or_follow=(track_id in [self.lead_track_id, self.follow_track_id]))
-            
-            # Draw track ID above head
-            head_point = keypoints[0][:2]
-            cv2.putText(frame, f"ID: {track_id}", 
-                       (int(head_point[0]), int(head_point[1] - 10)),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-        
-        return frame
-
-    #endregion
-
-    #region POSE
-
-    def mouse_callback(self, event, x, y, flags, param):
-        """Handle mouse clicks for pose selection and ray debug"""
-        if event == cv2.EVENT_LBUTTONDOWN or event == cv2.EVENT_RBUTTONDOWN:
-            self.mouse_data['clicked'] = True
-            self.virtualRoom.mouse_callback(x, y,
-                                            self.frame_height,
-                                            self.frame_width,
-                                            self.initial_camera_pose['position'],
-                                            self.frame_rotations[self.current_frame_idx],
-                                            self.frame_focal_lengths[self.current_frame_idx])
-
-            # Original pose selection logic
-            poses = self.pose_detections[str(self.current_frame_idx)]
-            closest_track_id = self.find_closest_pose(x, y, poses)
-
-            if closest_track_id:
-                if event == cv2.EVENT_LBUTTONDOWN:
-                    self.lead_track_id = closest_track_id
-                else:
-                    self.follow_track_id = closest_track_id
-
-                # Update display immediately after pose selection
-                self.update_display(False)
-
-    @staticmethod
-    def find_closest_pose(x, y, poses):
-        """Find the track ID of the pose closest to clicked point"""
-        min_dist = float('inf')
-        closest_track_id = None
-        
-        for pose in poses:
-            track_id = pose['id']
-            keypoints = np.array(pose['keypoints'])
-            # Use torso points to determine pose center
-            torso_points = keypoints[[5,6,11,12]][:,:2]  # shoulders and hips
-            center = np.mean(torso_points, axis=0)
-            
-            dist = np.sqrt((center[0] - x)**2 + (center[1] - y)**2)
-            if dist < min_dist:
-                min_dist = dist
-                closest_track_id = track_id
-        
-        return closest_track_id
-
-    def check_track_discontinuity(self):
-        # Otherwise, check if poses are still visible
-        current_poses = self.pose_detections.get(str(self.current_frame_idx), {})
-        return all(int(pose['id']) == self.lead_track_id or int(pose['id']) == self.follow_track_id
-                  for pose in current_poses)
 
     #endregion
 
@@ -564,15 +460,6 @@ class DanceRoomTracker:
             }
         utils.save_json(tracking_data, self.camera_tracking_json_path)
         print(f'Saved camera tracking to {self.camera_tracking_json_path}')
-
-    def save_pose_assignments(self):
-        """Save lead/follow pose assignments"""
-        assignments = {
-            'lead': self.lead_track_id,
-            'follow': self.follow_track_id
-        }
-        utils.save_json(assignments, self.pose_assignments_json_path)
-        print(f'Saved pose assignments to {self.pose_assignments_json_path}')
 
     def load_vo_data(self):
         """Load visual odometry data from json"""
