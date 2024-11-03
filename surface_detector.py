@@ -24,10 +24,11 @@ class SurfaceDetector:
             print(f"Warning: Depth file not found: {depth_file}")
             return None
 
-    def depth_map_to_point_cloud(self, depth_map, focal_length, frame_width, frame_height, downsample_factor=100):
-        """Convert depth map to point cloud using ray casting"""
+    def depth_map_to_point_cloud(self, depth_map, focal_length, frame_width, frame_height, downsample_factor=30):
+        """Convert depth map to point cloud using ray casting, preserving depth values"""
         h, w = depth_map.shape
         points = []
+        depths = []  # Store original depth values
         
         # Calculate scaling factors to map depth map coordinates to frame coordinates
         scale_x = frame_width / w
@@ -40,7 +41,7 @@ class SurfaceDetector:
                 depth = depth_map[v, u]
                 
                 # Skip invalid depths
-                if depth <= 0 or depth > 50.0:  # Max 50 meters
+                if depth <= 0 or depth > 30.0:  # Max 30 meters
                     continue
                     
                 # Scale depth map coordinates to frame coordinates
@@ -59,12 +60,13 @@ class SurfaceDetector:
                 # Calculate 3D point by extending ray by depth distance
                 point = ray * depth
                 points.append(point)
+                depths.append(depth)  # Store the depth
         
-        # Convert to numpy array
+        # Convert to numpy arrays
         points = np.array(points)
+        depths = np.array(depths)
         
-        # No need for additional downsampling since we already sampled sparsely
-        return points
+        return points, depths
 
     @staticmethod
     def project_point_to_world(image_point, rotation, focal_length, frame_width, frame_height):
@@ -91,7 +93,7 @@ class SurfaceDetector:
         return world_ray
 
     @staticmethod
-    def estimate_planes(points, distance_threshold=0.05, ransac_n=3, num_iterations=2000):
+    def estimate_planes(points, distance_threshold=0.15, ransac_n=3, num_iterations=2000):
         """Estimate planes with improved RANSAC parameters"""
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
@@ -150,7 +152,7 @@ class SurfaceDetector:
             if angle_y > 0.9:
                 # Check if the plane is at a reasonable height (d/normal[1] gives height)
                 height = -d/normal[1]
-                if -5 < height < 5:  # Allow for both floor and ceiling up to 3m
+                if -5 < height < 5:  # Allow for both floor and ceiling up to 5m
                     floor_planes.append(plane_model)
             # Walls: strong X or Z component, weak Y component
             elif angle_y < 0.3 and (angle_x > 0.7 or angle_z > 0.7):
@@ -160,9 +162,10 @@ class SurfaceDetector:
 
     @staticmethod
     def compute_intersections(floor_planes, wall_planes):
-        """Compute intersections with improved handling for room-scale geometry"""
+        """Compute both floor-wall and wall-wall intersections"""
         intersection_lines = []
         
+        # Floor-wall intersections
         for floor_plane in floor_planes:
             for wall_plane in wall_planes:
                 n1 = np.array(floor_plane[:3])
@@ -172,7 +175,7 @@ class SurfaceDetector:
                 n1 = n1 / np.linalg.norm(n1)
                 n2 = n2 / np.linalg.norm(n2)
                 
-                # Compute line direction (should be horizontal)
+                # Compute line direction
                 direction = np.cross(n1, n2)
                 
                 # Skip if direction is invalid
@@ -181,7 +184,7 @@ class SurfaceDetector:
                     
                 direction = direction / np.linalg.norm(direction)
                 
-                # Skip if line is too vertical
+                # Skip if line is too vertical (for floor-wall intersections)
                 if abs(direction[1]) > 0.1:
                     continue
                     
@@ -193,15 +196,63 @@ class SurfaceDetector:
                     point_on_line = np.linalg.lstsq(A, b, rcond=None)[0]
                     
                     # Skip if point is unreasonably far from origin
-                    if np.linalg.norm(point_on_line) > 50.0:  # Increased to match room scale
+                    if np.linalg.norm(point_on_line) > 30.0:
                         continue
                         
-                    # Ensure the line direction points in a consistent direction
-                    # Make it point to the right when viewed from above
+                    # Ensure consistent direction (right when viewed from above)
                     if direction[0] < 0:
                         direction = -direction
                         
-                    intersection_lines.append((point_on_line, direction))
+                    intersection_lines.append((point_on_line, direction, True))  # True for floor-wall
+                except np.linalg.LinAlgError:
+                    continue
+        
+        # Wall-wall intersections
+        for i in range(len(wall_planes)):
+            for j in range(i + 1, len(wall_planes)):
+                wall1 = wall_planes[i]
+                wall2 = wall_planes[j]
+                
+                n1 = np.array(wall1[:3])
+                n2 = np.array(wall2[:3])
+                
+                # Normalize normals
+                n1 = n1 / np.linalg.norm(n1)
+                n2 = n2 / np.linalg.norm(n2)
+                
+                # Check if walls are nearly parallel
+                if abs(np.dot(n1, n2)) > 0.95:  # cos(18°) ≈ 0.95
+                    continue
+                
+                # Compute line direction
+                direction = np.cross(n1, n2)
+                
+                # Skip if direction is invalid
+                if np.linalg.norm(direction) < 1e-6:
+                    continue
+                    
+                direction = direction / np.linalg.norm(direction)
+                
+                # For wall-wall intersections, direction should be mostly vertical
+                if abs(direction[1]) < 0.9:  # More than ~25° from vertical
+                    continue
+                
+                # Solve for point on line
+                A = np.vstack([n1, n2])
+                b = -np.array([wall1[3], wall2[3]])
+                
+                try:
+                    point_on_line = np.linalg.lstsq(A, b, rcond=None)[0]
+                    
+                    # Skip if point is unreasonably far from origin
+                    if np.linalg.norm(point_on_line) > 30.0:
+                        continue
+                        
+                    # Ensure consistent direction (up)
+                    if direction[1] < 0:
+                        direction = -direction
+                        
+                    intersection_lines.append((point_on_line, direction, False))  # False for wall-wall
                 except np.linalg.LinAlgError:
                     continue
         
@@ -209,14 +260,16 @@ class SurfaceDetector:
 
     def find_wall_floor_intersections_for_frame(self, frame_num, focal_length, frame_width, frame_height):
         depth_map = self.load_depth_map(frame_num)
-        points = self.depth_map_to_point_cloud(depth_map, focal_length, frame_width, frame_height)
+        points, depths = self.depth_map_to_point_cloud(depth_map, focal_length, frame_width, frame_height)
         plane_models, planes_inliers = self.estimate_planes(points)
         floor_planes, wall_planes = self.identify_planes(plane_models)
         intersection_lines = self.compute_intersections(floor_planes, wall_planes)
         
         # Classify points based on planes using the inliers directly
         floor_points = []
+        floor_depths = []
         wall_points = []
+        wall_depths = []
         
         # Keep track of used points to avoid duplicates
         used_points = set()
@@ -232,42 +285,21 @@ class SurfaceDetector:
             for idx in inliers:
                 if idx not in used_points:
                     point = points[idx]
+                    depth = depths[idx]
                     if is_floor:
                         floor_points.append(point)
+                        floor_depths.append(depth)
                     else:
                         wall_points.append(point)
+                        wall_depths.append(depth)
                     used_points.add(idx)
-        
-        # For remaining points, classify based on distance to planes
-        for idx in range(len(points)):
-            if idx in used_points:
-                continue
-                
-            point = points[idx]
-            min_floor_dist = float('inf')
-            min_wall_dist = float('inf')
-            
-            # Check distances to floor planes
-            for plane in floor_planes:
-                dist = abs(np.dot(plane[:3], point) + plane[3])
-                min_floor_dist = min(min_floor_dist, dist)
-                
-            # Check distances to wall planes
-            for plane in wall_planes:
-                dist = abs(np.dot(plane[:3], point) + plane[3])
-                min_wall_dist = min(min_wall_dist, dist)
-            
-            # Classify based on minimum distance
-            threshold = 0.05  # Increased threshold for better coverage
-            if min_floor_dist < threshold and min_floor_dist <= min_wall_dist:
-                floor_points.append(point)
-            elif min_wall_dist < threshold:
-                wall_points.append(point)
         
         # Convert to numpy arrays for better handling
         floor_points = np.array(floor_points) if floor_points else np.zeros((0, 3))
+        floor_depths = np.array(floor_depths) if floor_depths else np.array([])
         wall_points = np.array(wall_points) if wall_points else np.zeros((0, 3))
+        wall_depths = np.array(wall_depths) if wall_depths else np.array([])
         
         print(f"Found {len(floor_points)} floor points and {len(wall_points)} wall points")
         
-        return intersection_lines, floor_points, wall_points
+        return intersection_lines, (floor_points, floor_depths), (wall_points, wall_depths)

@@ -336,65 +336,180 @@ class DanceRoomTracker:
     #region DRAW
 
     def project_line_to_2d(self, line):
-        """Project a 3D line onto the 2D image plane."""
-        point_on_line, direction = line
-
-        points_2d, line_back = self.virtualRoom.project_points(
-            point_on_line,
-            Rotation.from_quat([0,0,0,1]),
-            [0,0,0],
-            self.frame_focal_lengths[self.current_frame_idx])
+        """Project a 3D line onto the 2D image plane by finding view frustum intersections"""
+        point_on_line, direction, is_floor_wall = line  # Unpack all three values
         
-        return points_2d
+        # Normalize direction
+        direction = direction / np.linalg.norm(direction)
+        
+        # Define camera frustum planes (in camera space)
+        # Near and far planes
+        z_near = 0.1
+        z_far = 100.0
+        
+        # Calculate frustum angles based on focal length
+        aspect = self.frame_width / self.frame_height
+        fov_y = 2 * np.arctan(0.5 / self.frame_focal_lengths[self.current_frame_idx])
+        fov_x = fov_y * aspect
+        
+        # Frustum planes normals (pointing inward)
+        frustum_planes = [
+            # Near plane
+            ([0, 0, z_near], [0, 0, 1]),
+            # Far plane
+            ([0, 0, z_far], [0, 0, -1]),
+            # Left plane
+            ([0, 0, 0], [np.cos(fov_x/2), 0, np.sin(fov_x/2)]),
+            # Right plane
+            ([0, 0, 0], [-np.cos(fov_x/2), 0, np.sin(fov_x/2)]),
+            # Top plane
+            ([0, 0, 0], [0, -np.cos(fov_y/2), np.sin(fov_y/2)]),
+            # Bottom plane
+            ([0, 0, 0], [0, np.cos(fov_y/2), np.sin(fov_y/2)])
+        ]
+        
+        # Find intersections with frustum planes
+        intersections = []
+        for plane_point, plane_normal in frustum_planes:
+            # Line-plane intersection
+            denom = np.dot(direction, plane_normal)
+            if abs(denom) > 1e-6:  # Check if not parallel
+                t = (np.dot(plane_normal, np.array(plane_point) - point_on_line)) / denom
+                intersection = point_on_line + direction * t
+                
+                # Check if intersection is within frustum bounds
+                if z_near <= intersection[2] <= z_far:
+                    # Check horizontal bounds
+                    x_bound = intersection[2] * np.tan(fov_x/2)
+                    if -x_bound <= intersection[0] <= x_bound:
+                        # Check vertical bounds
+                        y_bound = intersection[2] * np.tan(fov_y/2)
+                        if -y_bound <= intersection[1] <= y_bound:
+                            intersections.append(intersection)
+        
+        if len(intersections) >= 2:
+            # Sort intersections by distance along the line
+            distances = [np.dot(p - point_on_line, direction) for p in intersections]
+            sorted_indices = np.argsort(distances)
+            start_point = intersections[sorted_indices[0]]
+            end_point = intersections[sorted_indices[-1]]
+            
+            # Project the valid intersection points
+            points_2d, behind = self.virtualRoom.project_points(
+                np.array([start_point, end_point]),
+                Rotation.from_quat([0,0,0,1]),
+                [0,0,0],
+                self.frame_focal_lengths[self.current_frame_idx]
+            )
+            
+            if len(points_2d) >= 2:
+                # Clip line to frame bounds
+                x0, y0 = points_2d[0]
+                x1, y1 = points_2d[1]
+                
+                # Cohen-Sutherland line clipping
+                def clip_line(x0, y0, x1, y1, w, h):
+                    def compute_code(x, y, w, h):
+                        code = 0
+                        if x < 0: code |= 1
+                        if x >= w: code |= 2
+                        if y < 0: code |= 4
+                        if y >= h: code |= 8
+                        return code
+                    
+                    # Compute codes for both endpoints
+                    code0 = compute_code(x0, y0, w, h)
+                    code1 = compute_code(x1, y1, w, h)
+                    
+                    while True:
+                        if not (code0 | code1):  # Both endpoints inside
+                            return (int(x0), int(y0)), (int(x1), int(y1))
+                        elif code0 & code1:  # Both endpoints outside same region
+                            return None
+                        
+                        # Pick an endpoint outside the clip window
+                        code = code0 if code0 else code1
+                        
+                        # Find intersection point
+                        if code & 1:  # Left
+                            y = y0 + (y1 - y0) * (-x0) / (x1 - x0)
+                            x = 0
+                        elif code & 2:  # Right
+                            y = y0 + (y1 - y0) * (w - x0) / (x1 - x0)
+                            x = w - 1
+                        elif code & 4:  # Top
+                            x = x0 + (x1 - x0) * (-y0) / (y1 - y0)
+                            y = 0
+                        elif code & 8:  # Bottom
+                            x = x0 + (x1 - x0) * (h - y0) / (y1 - y0)
+                            y = h - 1
+                        
+                        # Replace outside point
+                        if code == code0:
+                            x0, y0 = x, y
+                            code0 = compute_code(x0, y0, w, h)
+                        else:
+                            x1, y1 = x, y
+                            code1 = compute_code(x1, y1, w, h)
+                
+                # Clip line to frame bounds
+                clipped = clip_line(x0, y0, x1, y1, self.frame_width, self.frame_height)
+                if clipped:
+                    return [clipped[0], clipped[1]]
+        
+        return []
 
     def draw_intersection_lines(self, display_frame, lines):
         """Draw the intersection lines with proper clipping and color coding"""
         for line in lines:
             points_2d = self.project_line_to_2d(line)
-            if len(points_2d) >= 2:  # Only draw if we have at least 2 valid points
-                # Get the normal vectors from the line data
-                point_on_line, direction = line
-                
-                # Check if one of the planes is the floor (has strong Y component)
-                is_floor_intersection = abs(direction[1]) < 0.1  # Floor-wall edges are mostly horizontal
+            if len(points_2d) == 2:  # Only draw if we have valid start and end points
+                point_on_line, direction, is_floor_wall = line
                 
                 # Color: red for floor-wall intersections, green for wall-wall
-                color = (0, 0, 255) if is_floor_intersection else (0, 255, 0)
+                color = (0, 0, 255) if is_floor_wall else (0, 255, 0)
                 
-                # Draw line segments between consecutive points
-                for i in range(len(points_2d) - 1):
-                    pt1 = points_2d[i]
-                    pt2 = points_2d[i + 1]
-                    cv2.line(display_frame, pt1, pt2, color, 2)
+                # Draw the line segment
+                cv2.line(display_frame, points_2d[0], points_2d[1], color, 2)
 
-    def draw_point_cloud(self, display_frame, floor_points, wall_points):
+    def draw_point_cloud(self, display_frame, floor_data, wall_data):
         """Draw color-coded point cloud with depth-based intensity"""
+        floor_points, floor_depths = floor_data
+        wall_points, wall_depths = wall_data
 
-        def get_depth_intensity(z, min_z=0.5, max_z=5.0):
+        def get_depth_intensity(depth, min_depth=0.5, max_depth=30.0):
             """Convert depth to color intensity (0-255)"""
-            z = np.clip(z, min_z, max_z)
-            return int(255 * (1 - (z - min_z) / (max_z - min_z)))
+            depth = np.clip(depth, min_depth, max_depth)
+            return int(255 * (1 - (depth - min_depth) / (max_depth - min_depth)))
 
         # Draw points with larger radius for better visibility
         point_radius = max(1, int(self.frame_width / 640))  # Scale point size with frame width
 
-        # Draw floor points in red with depth-based intensity
-        proj_floor_pts, floor_behind = self.virtualRoom.project_points(
-            floor_points,
-            Rotation.from_quat([0,0,0,1]),
-            [0,0,0],
-            self.frame_focal_lengths[self.current_frame_idx])
-        for point in proj_floor_pts:
-            cv2.circle(display_frame, point, point_radius, (0, 0, 255), -1)
+        # Project floor points
+        if len(floor_points) > 0:
+            proj_floor_pts, floor_behind = self.virtualRoom.project_points(
+                floor_points,
+                Rotation.from_quat([0,0,0,1]),
+                [0,0,0],
+                self.frame_focal_lengths[self.current_frame_idx])
+            
+            # Draw floor points with depth-based intensity
+            for i, point in enumerate(proj_floor_pts):
+                intensity = get_depth_intensity(floor_depths[i])
+                cv2.circle(display_frame, point, point_radius, (0, 0, intensity), -1)
 
-        # Draw wall points in green with depth-based intensity
-        proj_wall_pts, wall_behind = self.virtualRoom.project_points(
-            wall_points,
-            Rotation.from_quat([0,0,0,1]),
-            [0,0,0],
-            self.frame_focal_lengths[self.current_frame_idx])
-        for point in proj_wall_pts:
-            cv2.circle(display_frame, point, point_radius, (0, 255, 0), -1)
+        # Project wall points
+        if len(wall_points) > 0:
+            proj_wall_pts, wall_behind = self.virtualRoom.project_points(
+                wall_points,
+                Rotation.from_quat([0,0,0,1]),
+                [0,0,0],
+                self.frame_focal_lengths[self.current_frame_idx])
+            
+            # Draw wall points with depth-based intensity
+            for i, point in enumerate(proj_wall_pts):
+                intensity = get_depth_intensity(wall_depths[i])
+                cv2.circle(display_frame, point, point_radius, (0, intensity, 0), -1)
 
     def update_display(self, paused, lines=None):
         """Update display with current frame and overlays"""
@@ -409,16 +524,11 @@ class DanceRoomTracker:
         )
 
         if lines is not None:
-            # Unpack the returned tuple from find_wall_floor_intersections_for_frame
-            if isinstance(lines, tuple) and len(lines) == 3:
-                intersection_lines, floor_points, wall_points = lines
-                # Draw point cloud first (so lines appear on top)
-                self.draw_point_cloud(display_frame, floor_points, wall_points)
-                # Draw intersection lines
-                self.draw_intersection_lines(display_frame, intersection_lines)
-            else:
-                # Handle legacy case where only lines are returned
-                self.draw_intersection_lines(display_frame, lines)
+            intersection_lines, floor_data, wall_data = lines
+            # Draw point cloud first (so lines appear on top)
+            self.draw_point_cloud(display_frame, floor_data, wall_data)
+            # Draw intersection lines
+            self.draw_intersection_lines(display_frame, intersection_lines)
 
         # Add UI text
         if paused:
