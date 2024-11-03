@@ -280,7 +280,10 @@ class DanceRoomTracker:
 
             elif key == ord('d'):
                 lines = self.surfaceDetector.find_wall_floor_intersections_for_frame(
-                    self.current_frame_idx, self.frame_focal_lengths[self.current_frame_idx])
+                    self.current_frame_idx,
+                    self.frame_focal_lengths[self.current_frame_idx],
+                    self.frame_width,
+                    self.frame_height)
                 self.update_display(True, lines)
             
             elif key == ord(' '):  # Toggle play/pause
@@ -332,52 +335,67 @@ class DanceRoomTracker:
 
     #region DRAW
 
-    def project_line_to_2d(self, line, focal_length):
+    def project_line_to_2d(self, line):
         """Project a 3D line onto the 2D image plane."""
         point_on_line, direction = line
-        points_2d = []
-        
-        # Normalize direction vector
-        direction = direction / np.linalg.norm(direction)
-        
-        # Calculate appropriate scale for t based on scene size
-        scene_scale = np.linalg.norm(point_on_line)  # Use distance to origin as scale reference
-        t_scale = scene_scale * 2  # Adjust this multiplier as needed
-        
-        # Generate points along the line with adaptive scale
-        for t in np.linspace(-t_scale, t_scale, 20):
-            point_3d = point_on_line + t * direction
-            
-            # Skip points behind the camera
-            if point_3d[2] <= 0:
-                continue
-                
-            # Project using camera intrinsics
-            x_proj = (point_3d[0] / point_3d[2]) * focal_length
-            y_proj = (point_3d[1] / point_3d[2]) * focal_length
-            
-            # Convert to pixel coordinates
-            x_pixel = int(x_proj + self.frame_width / 2)
-            y_pixel = int(y_proj + self.frame_height / 2)
-            
-            # Only add points within frame bounds
-            if 0 <= x_pixel < self.frame_width and 0 <= y_pixel < self.frame_height:
-                points_2d.append((x_pixel, y_pixel))
+
+        points_2d, line_back = self.virtualRoom.project_points(
+            point_on_line,
+            Rotation.from_quat([0,0,0,1]),
+            [0,0,0],
+            self.frame_focal_lengths[self.current_frame_idx])
         
         return points_2d
 
-    def draw_intersection_lines(self, display_frame, lines, focal_length):
-        """Draw the intersection lines with proper clipping"""
+    def draw_intersection_lines(self, display_frame, lines):
+        """Draw the intersection lines with proper clipping and color coding"""
         for line in lines:
-            points_2d = self.project_line_to_2d(line, focal_length)
+            points_2d = self.project_line_to_2d(line)
             if len(points_2d) >= 2:  # Only draw if we have at least 2 valid points
+                # Get the normal vectors from the line data
+                point_on_line, direction = line
+                
+                # Check if one of the planes is the floor (has strong Y component)
+                is_floor_intersection = abs(direction[1]) < 0.1  # Floor-wall edges are mostly horizontal
+                
+                # Color: red for floor-wall intersections, green for wall-wall
+                color = (0, 0, 255) if is_floor_intersection else (0, 255, 0)
+                
                 # Draw line segments between consecutive points
                 for i in range(len(points_2d) - 1):
                     pt1 = points_2d[i]
                     pt2 = points_2d[i + 1]
-                    cv2.line(display_frame, pt1, pt2, (0, 255, 0), 2)
+                    cv2.line(display_frame, pt1, pt2, color, 2)
 
-    # Updated update_display method to include intersection line drawing
+    def draw_point_cloud(self, display_frame, floor_points, wall_points):
+        """Draw color-coded point cloud with depth-based intensity"""
+
+        def get_depth_intensity(z, min_z=0.5, max_z=5.0):
+            """Convert depth to color intensity (0-255)"""
+            z = np.clip(z, min_z, max_z)
+            return int(255 * (1 - (z - min_z) / (max_z - min_z)))
+
+        # Draw points with larger radius for better visibility
+        point_radius = max(1, int(self.frame_width / 640))  # Scale point size with frame width
+
+        # Draw floor points in red with depth-based intensity
+        proj_floor_pts, floor_behind = self.virtualRoom.project_points(
+            floor_points,
+            Rotation.from_quat([0,0,0,1]),
+            [0,0,0],
+            self.frame_focal_lengths[self.current_frame_idx])
+        for point in proj_floor_pts:
+            cv2.circle(display_frame, point, point_radius, (0, 0, 255), -1)
+
+        # Draw wall points in green with depth-based intensity
+        proj_wall_pts, wall_behind = self.virtualRoom.project_points(
+            wall_points,
+            Rotation.from_quat([0,0,0,1]),
+            [0,0,0],
+            self.frame_focal_lengths[self.current_frame_idx])
+        for point in proj_wall_pts:
+            cv2.circle(display_frame, point, point_radius, (0, 255, 0), -1)
+
     def update_display(self, paused, lines=None):
         """Update display with current frame and overlays"""
         display_frame = self.current_frame.copy()
@@ -386,12 +404,21 @@ class DanceRoomTracker:
         display_frame = self.virtualRoom.draw_virtual_room(
             display_frame,
             self.initial_camera_pose['position'],
-            self.frame_rotations[self.current_frame_idx],
+            Rotation.from_quat(self.frame_rotations[self.current_frame_idx]),
             self.frame_focal_lengths[self.current_frame_idx]
         )
 
         if lines is not None:
-            self.draw_intersection_lines(display_frame, lines, self.frame_focal_lengths[self.current_frame_idx])
+            # Unpack the returned tuple from find_wall_floor_intersections_for_frame
+            if isinstance(lines, tuple) and len(lines) == 3:
+                intersection_lines, floor_points, wall_points = lines
+                # Draw point cloud first (so lines appear on top)
+                self.draw_point_cloud(display_frame, floor_points, wall_points)
+                # Draw intersection lines
+                self.draw_intersection_lines(display_frame, intersection_lines)
+            else:
+                # Handle legacy case where only lines are returned
+                self.draw_intersection_lines(display_frame, lines)
 
         # Add UI text
         if paused:
@@ -415,24 +442,6 @@ class DanceRoomTracker:
         self.draw_timeline(display_frame)
 
         cv2.imshow('Dance Room Tracker', display_frame)
-
-    def prepare_display_frame(self):
-        """Prepare frame for display during tracking"""
-        display_frame = self.current_frame.copy()
-        display_frame = self.virtualRoom.draw_virtual_room(
-            display_frame,
-            self.initial_camera_pose['position'],
-            self.frame_rotations[self.current_frame_idx],
-            self.frame_focal_lengths[self.current_frame_idx]
-        )
-
-        # Add point counts in top-left corner
-        y_offset = 30
-        cv2.putText(display_frame, f"Frame: {self.current_frame_idx}",
-                    (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        y_offset += 20
-
-        return display_frame
 
     #endregion
 
@@ -653,7 +662,6 @@ class DanceRoomTracker:
             self.frame_focal_lengths[frame_idx] = self.processed_vo_focal_lengths[frame_idx]
 
         print("set rotations and focal lengths from adjusted visual odometry")
-
 
     def get_total_frames(self):
         """Get total number of frames in video"""

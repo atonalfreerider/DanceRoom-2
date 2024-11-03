@@ -1,13 +1,14 @@
 import numpy as np
 import open3d as o3d
 import os
+from scipy.spatial.transform import Rotation
 
 class SurfaceDetector:
     def __init__(self, depth_dir, pixel_to_meter=0.000264583):
         self.depth_dir = depth_dir
-        self.cx = 320  # pixel coordinates
-        self.cy = 240  # pixel coordinates
-        self.pixel_to_meter = pixel_to_meter  # conversion factor from pixels to meters
+        self.depth_width = 640   # Original depth map dimensions
+        self.depth_height = 480
+        self.pixel_to_meter = pixel_to_meter
 
     def load_depth_map(self, frame_num):
         depth_file = os.path.join(self.depth_dir, f'{frame_num:06d}.npz')
@@ -23,92 +24,250 @@ class SurfaceDetector:
             print(f"Warning: Depth file not found: {depth_file}")
             return None
 
-    def depth_map_to_point_cloud(self, depth_map, focal_length, downsample_factor=100):
+    def depth_map_to_point_cloud(self, depth_map, focal_length, frame_width, frame_height, downsample_factor=100):
+        """Convert depth map to point cloud using ray casting"""
         h, w = depth_map.shape
-        u = np.arange(w)
-        v = np.arange(h)
-        u, v = np.meshgrid(u, v)
-        u = u.flatten()
-        v = v.flatten()
-        z = depth_map.flatten()
-        valid = z > 0
-        u = u[valid]
-        v = v[valid]
-        z = z[valid]
-
-        # Convert pixel coordinates to meters before computing 3D coordinates
-        x = ((u - self.cx) * self.pixel_to_meter) * z / focal_length
-        y = ((v - self.cy) * self.pixel_to_meter) * z / focal_length
-        points = np.vstack((x, y, z)).T
-
-        # Downsample the points by a factor of 100
-        if downsample_factor > 1:
-            indices = np.random.choice(points.shape[0], points.shape[0] // downsample_factor, replace=False)
-            points = points[indices]
-
+        points = []
+        
+        # Calculate scaling factors to map depth map coordinates to frame coordinates
+        scale_x = frame_width / w
+        scale_y = frame_height / h
+        
+        # Create sampling grid based on downsample factor
+        step = int(np.sqrt(downsample_factor))
+        for v in range(0, h, step):
+            for u in range(0, w, step):
+                depth = depth_map[v, u]
+                
+                # Skip invalid depths
+                if depth <= 0 or depth > 50.0:  # Max 50 meters
+                    continue
+                    
+                # Scale depth map coordinates to frame coordinates
+                frame_x = u * scale_x
+                frame_y = v * scale_y
+                
+                # Create ray from camera through this pixel
+                ray = self.project_point_to_world(
+                    np.array([frame_x, frame_y]), 
+                    np.array([0, 0, 0, 1]),  # Identity rotation (camera space)
+                    focal_length,
+                    frame_width,
+                    frame_height
+                )
+                
+                # Calculate 3D point by extending ray by depth distance
+                point = ray * depth
+                points.append(point)
+        
+        # Convert to numpy array
+        points = np.array(points)
+        
+        # No need for additional downsampling since we already sampled sparsely
         return points
 
     @staticmethod
-    def estimate_planes(points, distance_threshold=0.02, ransac_n=3, num_iterations=1000):
+    def project_point_to_world(image_point, rotation, focal_length, frame_width, frame_height):
+        """Project image point to world coordinates and determine which plane it lies on"""
+        fx = fy = min(frame_height, frame_width)
+        cx, cy = frame_width / 2, frame_height / 2
+        rotation = Rotation.from_quat(rotation)
+
+        # Convert to normalized device coordinates - flip X sign to change orientation
+        x_ndc = -(image_point[0] - cx) / fx  # Negative sign to flip X orientation
+        y_ndc = (cy - image_point[1]) / fy  # Keep Y flipped
+
+        # Create ray in camera space (positive Z is forward)
+        ray_dir = np.array([
+            x_ndc / focal_length,
+            y_ndc / focal_length,
+            1.0  # Positive Z for forward
+        ])
+        ray_dir = ray_dir / np.linalg.norm(ray_dir)
+
+        # Transform ray to world space
+        world_ray = rotation.apply(ray_dir)
+
+        return world_ray
+
+    @staticmethod
+    def estimate_planes(points, distance_threshold=0.05, ransac_n=3, num_iterations=2000):
+        """Estimate planes with improved RANSAC parameters"""
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
+        
+        # Estimate normals (this helps with plane detection)
+        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+        
         plane_models = []
         planes_inliers = []
-        max_planes = 5  # Adjust based on expected number of planes
-        for _ in range(max_planes):
-            if len(pcd.points) < 100:
+        remaining_points = pcd
+        min_points = max(100, len(points) // 20)  # At least 5% of points for a plane
+        
+        for _ in range(5):  # Try to find up to 5 planes
+            if len(remaining_points.points) < min_points:
                 break
-            plane_model, inliers = pcd.segment_plane(distance_threshold,
-                                                     ransac_n,
-                                                     num_iterations)
-            if len(inliers) < 50:
+                
+            # Segment plane with increased iterations and threshold
+            plane_model, inliers = remaining_points.segment_plane(
+                distance_threshold=distance_threshold,
+                ransac_n=ransac_n,
+                num_iterations=num_iterations
+            )
+            
+            if len(inliers) < min_points:
                 break
+                
+            # Ensure plane normal points towards camera
+            if plane_model[2] < 0:  # If Z component is negative
+                plane_model = -np.array(plane_model)  # Flip normal
+                
             plane_models.append(plane_model)
             planes_inliers.append(inliers)
-            pcd = pcd.select_by_index(inliers, invert=True)
+            
+            # Remove inliers and continue
+            remaining_points = remaining_points.select_by_index(inliers, invert=True)
+        
         return plane_models, planes_inliers
 
     @staticmethod
     def identify_planes(plane_models):
+        """Identify planes with improved normal checks for room-scale geometry"""
         floor_planes = []
         wall_planes = []
+        
         for plane_model in plane_models:
             normal = np.array(plane_model[:3])
             normal = normal / np.linalg.norm(normal)
-            abs_normal_1 = abs(normal[1])
-            if abs_normal_1 > 0.9:
-                floor_planes.append(plane_model)
-            else:
+            d = plane_model[3]
+            
+            # Get angles with coordinate axes
+            angle_y = np.abs(np.dot(normal, [0, 1, 0]))  # Angle with Y axis
+            angle_z = np.abs(np.dot(normal, [0, 0, 1]))  # Angle with Z axis
+            angle_x = np.abs(np.dot(normal, [1, 0, 0]))  # Angle with X axis
+            
+            # Floor/ceiling: strong Y component and reasonable height
+            if angle_y > 0.9:
+                # Check if the plane is at a reasonable height (d/normal[1] gives height)
+                height = -d/normal[1]
+                if -5 < height < 5:  # Allow for both floor and ceiling up to 3m
+                    floor_planes.append(plane_model)
+            # Walls: strong X or Z component, weak Y component
+            elif angle_y < 0.3 and (angle_x > 0.7 or angle_z > 0.7):
                 wall_planes.append(plane_model)
+        
         return floor_planes, wall_planes
 
     @staticmethod
     def compute_intersections(floor_planes, wall_planes):
+        """Compute intersections with improved handling for room-scale geometry"""
         intersection_lines = []
+        
         for floor_plane in floor_planes:
             for wall_plane in wall_planes:
                 n1 = np.array(floor_plane[:3])
                 n2 = np.array(wall_plane[:3])
+                
+                # Normalize normals
                 n1 = n1 / np.linalg.norm(n1)
                 n2 = n2 / np.linalg.norm(n2)
+                
+                # Compute line direction (should be horizontal)
                 direction = np.cross(n1, n2)
+                
+                # Skip if direction is invalid
                 if np.linalg.norm(direction) < 1e-6:
                     continue
-                A = np.array([n1, n2])
+                    
+                direction = direction / np.linalg.norm(direction)
+                
+                # Skip if line is too vertical
+                if abs(direction[1]) > 0.1:
+                    continue
+                    
+                # Solve for point on line
+                A = np.vstack([n1, n2])
                 b = -np.array([floor_plane[3], wall_plane[3]])
+                
                 try:
                     point_on_line = np.linalg.lstsq(A, b, rcond=None)[0]
+                    
+                    # Skip if point is unreasonably far from origin
+                    if np.linalg.norm(point_on_line) > 50.0:  # Increased to match room scale
+                        continue
+                        
+                    # Ensure the line direction points in a consistent direction
+                    # Make it point to the right when viewed from above
+                    if direction[0] < 0:
+                        direction = -direction
+                        
                     intersection_lines.append((point_on_line, direction))
                 except np.linalg.LinAlgError:
                     continue
+        
         return intersection_lines
 
-    def find_wall_floor_intersections(self, depth_map, focal_length):
-        points = self.depth_map_to_point_cloud(depth_map, focal_length)
+    def find_wall_floor_intersections_for_frame(self, frame_num, focal_length, frame_width, frame_height):
+        depth_map = self.load_depth_map(frame_num)
+        points = self.depth_map_to_point_cloud(depth_map, focal_length, frame_width, frame_height)
         plane_models, planes_inliers = self.estimate_planes(points)
         floor_planes, wall_planes = self.identify_planes(plane_models)
         intersection_lines = self.compute_intersections(floor_planes, wall_planes)
-        return intersection_lines
-
-    def find_wall_floor_intersections_for_frame(self, frame_num, focal_length):
-        return self.find_wall_floor_intersections(self.load_depth_map(frame_num), focal_length)
+        
+        # Classify points based on planes using the inliers directly
+        floor_points = []
+        wall_points = []
+        
+        # Keep track of used points to avoid duplicates
+        used_points = set()
+        
+        # First, use the inlier indices from RANSAC
+        for plane_idx, inliers in enumerate(planes_inliers):
+            # Check if this is a floor or wall plane
+            plane_model = plane_models[plane_idx]
+            normal = np.array(plane_model[:3])
+            normal = normal / np.linalg.norm(normal)
+            is_floor = abs(normal[1]) > 0.9  # Check Y component for floor
+            
+            for idx in inliers:
+                if idx not in used_points:
+                    point = points[idx]
+                    if is_floor:
+                        floor_points.append(point)
+                    else:
+                        wall_points.append(point)
+                    used_points.add(idx)
+        
+        # For remaining points, classify based on distance to planes
+        for idx in range(len(points)):
+            if idx in used_points:
+                continue
+                
+            point = points[idx]
+            min_floor_dist = float('inf')
+            min_wall_dist = float('inf')
+            
+            # Check distances to floor planes
+            for plane in floor_planes:
+                dist = abs(np.dot(plane[:3], point) + plane[3])
+                min_floor_dist = min(min_floor_dist, dist)
+                
+            # Check distances to wall planes
+            for plane in wall_planes:
+                dist = abs(np.dot(plane[:3], point) + plane[3])
+                min_wall_dist = min(min_wall_dist, dist)
+            
+            # Classify based on minimum distance
+            threshold = 0.05  # Increased threshold for better coverage
+            if min_floor_dist < threshold and min_floor_dist <= min_wall_dist:
+                floor_points.append(point)
+            elif min_wall_dist < threshold:
+                wall_points.append(point)
+        
+        # Convert to numpy arrays for better handling
+        floor_points = np.array(floor_points) if floor_points else np.zeros((0, 3))
+        wall_points = np.array(wall_points) if wall_points else np.zeros((0, 3))
+        
+        print(f"Found {len(floor_points)} floor points and {len(wall_points)} wall points")
+        
+        return intersection_lines, floor_points, wall_points
