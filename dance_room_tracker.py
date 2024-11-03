@@ -6,6 +6,7 @@ import json
 
 import utils
 from virtual_room import VirtualRoom
+import surface_detector
 
 
 class DanceRoomTracker:
@@ -14,6 +15,8 @@ class DanceRoomTracker:
         self.output_dir = output_dir
         self.initial_camera_pose_json_path = output_dir + '/initial_camera_pose.json'
         self.camera_tracking_json_path = output_dir + '/camera_tracking.json'
+
+        self.surfaceDetector = surface_detector.SurfaceDetector(output_dir + "/depth")
         
         # Load initial camera pose (position and initial orientation/focal)
         self.initial_camera_pose = self.load_initial_camera_pose()
@@ -35,9 +38,9 @@ class DanceRoomTracker:
         self.current_frame_idx = 0
 
         # Load VO data at startup
-        self.vo_data = None
-        if tracking_data is None:
-            self.vo_data = self.load_vo_data()
+        self.vo_data = self.load_vo_data()
+        self.processed_vo_rotations = {}
+        self.processed_vo_focal_lengths = {}
         
         # Add tracking for keypoints
         self.rotation_keypoints = {}  # frame_idx -> rotation quaternion
@@ -255,6 +258,14 @@ class DanceRoomTracker:
         # Create window and set mouse callback
         cv2.namedWindow('Dance Room Tracker')
         self.process_vo_data()
+        if len(self.frame_rotations) == 0:
+            # first time. set rotations from processed vo data
+            self.set_rotations_from_processed_vo()
+
+        # Automatically create a keyframe at the last frame
+        last_frame = len(self.vo_data) - 1
+        self.rotation_keypoints[last_frame] = self.frame_rotations[last_frame].copy()
+        self.focal_keypoints[last_frame] = self.frame_focal_lengths[last_frame]
 
         self.update_display(True)
         
@@ -262,10 +273,15 @@ class DanceRoomTracker:
         
         while True:
             key = cv2.waitKey(1) & 0xFF
-            
+
             if key == ord('s'):
                 self.save_camera_tracking()
                 print("Saved tracking data")
+
+            elif key == ord('d'):
+                lines = self.surfaceDetector.find_wall_floor_intersections_for_frame(
+                    self.current_frame_idx, self.frame_focal_lengths[self.current_frame_idx])
+                self.update_display(True, lines)
             
             elif key == ord(' '):  # Toggle play/pause
                 playing = not playing
@@ -316,10 +332,56 @@ class DanceRoomTracker:
 
     #region DRAW
 
-    def update_display(self, paused):
+    def project_line_to_2d(self, line, focal_length):
+        """Project a 3D line onto the 2D image plane."""
+        point_on_line, direction = line
+        points_2d = []
+        
+        # Normalize direction vector
+        direction = direction / np.linalg.norm(direction)
+        
+        # Calculate appropriate scale for t based on scene size
+        scene_scale = np.linalg.norm(point_on_line)  # Use distance to origin as scale reference
+        t_scale = scene_scale * 2  # Adjust this multiplier as needed
+        
+        # Generate points along the line with adaptive scale
+        for t in np.linspace(-t_scale, t_scale, 20):
+            point_3d = point_on_line + t * direction
+            
+            # Skip points behind the camera
+            if point_3d[2] <= 0:
+                continue
+                
+            # Project using camera intrinsics
+            x_proj = (point_3d[0] / point_3d[2]) * focal_length
+            y_proj = (point_3d[1] / point_3d[2]) * focal_length
+            
+            # Convert to pixel coordinates
+            x_pixel = int(x_proj + self.frame_width / 2)
+            y_pixel = int(y_proj + self.frame_height / 2)
+            
+            # Only add points within frame bounds
+            if 0 <= x_pixel < self.frame_width and 0 <= y_pixel < self.frame_height:
+                points_2d.append((x_pixel, y_pixel))
+        
+        return points_2d
+
+    def draw_intersection_lines(self, display_frame, lines, focal_length):
+        """Draw the intersection lines with proper clipping"""
+        for line in lines:
+            points_2d = self.project_line_to_2d(line, focal_length)
+            if len(points_2d) >= 2:  # Only draw if we have at least 2 valid points
+                # Draw line segments between consecutive points
+                for i in range(len(points_2d) - 1):
+                    pt1 = points_2d[i]
+                    pt2 = points_2d[i + 1]
+                    cv2.line(display_frame, pt1, pt2, (0, 255, 0), 2)
+
+    # Updated update_display method to include intersection line drawing
+    def update_display(self, paused, lines=None):
         """Update display with current frame and overlays"""
         display_frame = self.current_frame.copy()
-        
+
         # Draw virtual room with current frame's rotation and focal length
         display_frame = self.virtualRoom.draw_virtual_room(
             display_frame,
@@ -327,28 +389,31 @@ class DanceRoomTracker:
             self.frame_rotations[self.current_frame_idx],
             self.frame_focal_lengths[self.current_frame_idx]
         )
-        
+
+        if lines is not None:
+            self.draw_intersection_lines(display_frame, lines, self.frame_focal_lengths[self.current_frame_idx])
+
         # Add UI text
         if paused:
             if self.current_frame_idx == 0:
-                cv2.putText(display_frame, 
-                           "WASD: Move camera | QE: Up/Down | Arrows: Pan/Tilt | OP: Roll | ZX: Zoom",
-                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.putText(display_frame,
+                            "WASD: Move camera | QE: Up/Down | Arrows: Pan/Tilt | OP: Roll | ZX: Zoom",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             else:
-                cv2.putText(display_frame, 
-                           "Arrows: Pan/Tilt | OP: Roll | ZX: Zoom | Enter: Set Keyframe",
-                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
+                cv2.putText(display_frame,
+                            "Arrows: Pan/Tilt | OP: Roll | ZX: Zoom | Enter: Set Keyframe",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
         # Draw frame counter and keyframe indicator
         text = f"Frame: {self.current_frame_idx}"
         if self.current_frame_idx in self.rotation_keypoints:
             text += " (Keyframe)"
         cv2.putText(display_frame, text,
                     (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
+
         # Draw timeline
         self.draw_timeline(display_frame)
-        
+
         cv2.imshow('Dance Room Tracker', display_frame)
 
     def prepare_display_frame(self):
@@ -537,21 +602,18 @@ class DanceRoomTracker:
 
     def process_vo_data(self):
         """Process visual odometry data after camera calibration"""
-        vo_data = self.load_vo_data()
-        if not vo_data:
-            return
 
         # Get initial camera state
         initial_rotation = Rotation.from_quat(self.initial_camera_pose['rotation'])
         initial_focal = self.initial_camera_pose['focal_length']
-        initial_z = vo_data[0][2]  # Initial z position from VO
+        initial_z = self.vo_data[0][2]  # Initial z position from VO
 
         # Process each frame
         window_size = 20
         raw_rotations = []  # Store raw rotation matrices for smoothing
 
         # First pass: calculate raw rotations
-        for frame_data in vo_data:
+        for frame_data in self.vo_data:
             vo_rotation = Rotation.from_quat(frame_data[3:])
             relative_rotation = initial_rotation * vo_rotation.inv()
             raw_rotations.append(relative_rotation.as_matrix())
@@ -575,23 +637,23 @@ class DanceRoomTracker:
             smoothed_rotations.append(Rotation.from_matrix(smoothed_matrix))
 
         # Second pass: store smoothed rotations and process focal lengths
-        for frame_idx, frame_data in enumerate(vo_data):
+        for frame_idx, frame_data in enumerate(self.vo_data):
             # Store smoothed rotation
-            self.frame_rotations[frame_idx] = smoothed_rotations[frame_idx].as_quat()
+            self.processed_vo_rotations[frame_idx] = smoothed_rotations[frame_idx].as_quat()
 
             # Process focal length as before
             pos = np.array(frame_data[:3])
             z_delta = pos[2] - initial_z
             focal_delta = z_delta * 0.7  # RATIO of Z to Focal Length
-            self.frame_focal_lengths[frame_idx] = initial_focal + focal_delta
+            self.processed_vo_focal_lengths[frame_idx] = initial_focal + focal_delta
 
-        # Automatically create a keyframe at the last frame
-        last_frame = len(vo_data) - 1
-        self.rotation_keypoints[last_frame] = self.frame_rotations[last_frame].copy()
-        self.focal_keypoints[last_frame] = self.frame_focal_lengths[last_frame]
+    def set_rotations_from_processed_vo(self):
+        for frame_idx, frame_data in enumerate(self.vo_data):
+            self.frame_rotations[frame_idx] = self.processed_vo_rotations[frame_idx]
+            self.frame_focal_lengths[frame_idx] = self.processed_vo_focal_lengths[frame_idx]
 
-        # Save updated tracking data
-        self.save_camera_tracking()
+        print("set rotations and focal lengths from adjusted visual odometry")
+
 
     def get_total_frames(self):
         """Get total number of frames in video"""

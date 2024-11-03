@@ -12,8 +12,8 @@ def main(video_path, output_dir):
     # saM2.run()
 
     # use YOLOv11-pose to detect poses of figures and track them with IoU. Output detections.json for later use
-    yoloPose = yolo_pose.YOLOPose(video_path, output_dir)
-    yoloPose.detect_poses()
+    #yoloPose = yolo_pose.YOLOPose(video_path, output_dir)
+    #yoloPose.detect_poses()
 
     # Initialize room tracking and dancer selection
     danceRoomTracker = dance_room_tracker.DanceRoomTracker(video_path, output_dir)
