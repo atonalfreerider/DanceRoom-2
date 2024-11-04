@@ -113,11 +113,29 @@ class SurfaceDetector:
             except:
                 return None, None
 
+        def analyze_corner_point(depths, x_coords, max_depth_idx, window_size=5):
+            """Verify corner point by checking depth consistency of adjacent points"""
+            if max_depth_idx < window_size or max_depth_idx >= len(depths) - window_size:
+                return False
+                
+            corner_depth = depths[max_depth_idx]
+            
+            # Check left side consistency
+            left_depths = depths[max_depth_idx-window_size:max_depth_idx]
+            left_diff = np.abs(left_depths - corner_depth) / corner_depth
+            if not np.all(left_diff < 0.15):  # 15% threshold
+                return False
+                
+            # Check right side consistency
+            right_depths = depths[max_depth_idx+1:max_depth_idx+window_size+1]
+            right_diff = np.abs(right_depths - corner_depth) / corner_depth
+            if not np.all(right_diff < 0.15):  # 15% threshold
+                return False
+                
+            return True
+
         def analyze_floor_slope(depths, y_coords, wall_depth):
-            """
-            Analyze floor using quadratic regression from bottom up.
-            Returns quadratic function and its parameters.
-            """
+            """Analyze floor using quadratic regression from bottom up"""
             if len(depths) < initial_points:
                 return None, None
                 
@@ -133,12 +151,6 @@ class SurfaceDetector:
             if quad_func is None:
                 return None, None
                 
-            # Variables to track best fit
-            best_points = floor_points.copy()
-            best_func = quad_func
-            best_params = params
-            consecutive_outliers = 0
-            
             # Continue adding points while they follow the curve
             for i in range(initial_points, len(depths)):
                 depth = depths[i]
@@ -147,33 +159,23 @@ class SurfaceDetector:
                 predicted_y = quad_func(depth)
                 error = abs(y - predicted_y) / abs(predicted_y)
                 
-                # Stop if we reach wall depth (but don't use this point for intersection)
-                if abs(depth - wall_depth) < 0.1:
+                # Stop if error exceeds threshold
+                if error > 0.15:  # 15% deviation threshold
                     break
                     
-                if error > outlier_threshold:
-                    consecutive_outliers += 1
-                    if consecutive_outliers >= 3:
-                        break
-                else:
-                    consecutive_outliers = 0
-                    floor_points.append((depth, y))
-                    
-                    # Update quadratic fit every few points
-                    if len(floor_points) % 3 == 0:
-                        points = np.array(floor_points)
-                        new_func, new_params = fit_quadratic(points[:, 0], points[:, 1])
-                        if new_func is not None:
-                            quad_func = new_func
-                            params = new_params
-                            best_points = floor_points.copy()
-                            best_func = quad_func
-                            best_params = params
+                floor_points.append((depth, y))
+                
+                # Update quadratic fit
+                points = np.array(floor_points)
+                new_func, new_params = fit_quadratic(points[:, 0], points[:, 1])
+                if new_func is not None:
+                    quad_func = new_func
+                    params = new_params
             
-            if len(best_points) < min_points:
+            if len(floor_points) < min_points:
                 return None, None
                 
-            return best_func, best_params
+            return quad_func, params
 
         def analyze_edge_slope(depths, x_coords, from_left=True):
             """Analyze wall slope at frame edges"""
@@ -370,6 +372,7 @@ class SurfaceDetector:
                 debug_points['floor_points'].extend(zip([x]*len(test_depths), floor_y_values))
 
         # Process horizontal stripes for corner detection
+        corner_candidates = []
         for y in range(0, depth_map.shape[0] // 2, stripe_width):
             depths = depth_map[y, :]
             valid_mask = depths > 0
@@ -378,14 +381,13 @@ class SurfaceDetector:
             
             if len(valid_depths) < depth_map.shape[1] * 0.3:
                 continue
-
-            # Find deepest point
+            
+            # Find the deepest point
             max_depth_idx = np.argmax(valid_depths)
-            if initial_points < max_depth_idx < len(valid_depths) - initial_points:
-                if (valid_depths[max_depth_idx] > valid_depths[max_depth_idx-initial_points:max_depth_idx]).all() and \
-                   (valid_depths[max_depth_idx] > valid_depths[max_depth_idx+1:max_depth_idx+initial_points+1]).all():
-                    corner_x = valid_x[max_depth_idx]
-                    debug_points['corner_candidates'].append((corner_x, y))
+            
+            # Verify corner point consistency
+            if analyze_corner_point(valid_depths, valid_x, max_depth_idx):
+                corner_candidates.append((valid_x[max_depth_idx], y))
 
         # Draw debug visualization
         # Draw wall depths
@@ -398,26 +400,22 @@ class SurfaceDetector:
         # Draw floor points
         for x, y in debug_points['floor_points']:
             try:
-                if not np.isnan(x) and not np.isnan(y):  # Check for NaN values
+                if not np.isnan(x) and not np.isnan(y):
                     cv2.circle(debug_frame, (int(x), int(y)), 2, (255, 0, 0), -1)  # Blue
             except:
                 continue
 
-        # Draw corner candidates
-        for x, y in debug_points['corner_candidates']:
+        # Draw corner candidates in red
+        for x, y in corner_candidates:
             try:
                 cv2.circle(debug_frame, (int(x), int(y)), 3, (0, 0, 255), -1)  # Red
             except:
                 continue
 
-        # Draw floor-wall intersection points
-        for x, y in floor_wall_points:
+        # Draw floor-wall intersection points in cyan
+        for x, y in debug_points['floor_wall_points']:
             try:
-                x_depth = int(x / scale_x)
-                y_depth = int(y / scale_y)
-                # Use different colors for natural vs calculated intersections
-                color = (0, 255, 255) if natural_intersection else (255, 255, 0)
-                cv2.circle(debug_frame, (x_depth, y_depth), 4, color, -1)
+                cv2.circle(debug_frame, (int(x), int(y)), 4, (255, 255, 0), -1)  # Cyan (255, 255, 0)
             except:
                 continue
 
@@ -430,6 +428,12 @@ class SurfaceDetector:
                 cv2.line(debug_frame, p1_depth, p2_depth, color, 2)
             except:
                 continue
+
+        # Add text labels for clarity
+        cv2.putText(debug_frame, "Wall depths (green)", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.putText(debug_frame, "Floor points (blue)", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+        cv2.putText(debug_frame, "Corner candidates (red)", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        cv2.putText(debug_frame, "Floor-wall intersections (cyan)", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
         # Show debug visualization
         cv2.imshow('Depth Analysis Debug', debug_frame)
