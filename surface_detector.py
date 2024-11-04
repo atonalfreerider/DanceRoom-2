@@ -256,88 +256,175 @@ class SurfaceDetector:
         return intersection_lines
 
     def find_wall_floor_intersections_for_frame(self, frame_num, focal_length, frame_width, frame_height):
+        """Find wall-floor intersections using depth line analysis"""
         depth_map = self.load_depth_map(frame_num)
-        points, depths = self.depth_map_to_point_cloud(depth_map, focal_length, frame_width, frame_height)
-        plane_models, planes_inliers = self.estimate_planes(points)
-        floor_planes, wall_planes = self.identify_planes(plane_models)
-        intersection_lines = self.compute_intersections(floor_planes, wall_planes)
+        if depth_map is None:
+            return [], (np.zeros((0, 3)), np.array([])), (np.zeros((0, 3)), np.array([]))
+
+        # Step 1: Find the deepest point(s) in the frame
+        max_depth = np.max(depth_map[depth_map > 0])  # Ignore zero depths
+        deep_points = np.where(depth_map > max_depth * 0.95)  # Points within 5% of max depth
         
-        # Classify points based on planes using the inliers directly
-        floor_points = []
-        floor_depths = []
-        wall_points = []
-        wall_depths = []
+        # Calculate centroid of deep region
+        deep_center = np.array([np.mean(deep_points[0]), np.mean(deep_points[1])])
         
-        # Keep track of used points to avoid duplicates
-        used_points = set()
+        # Step 2: Search for vertical corner edge
+        corner_found = False
+        corner_x = None
+        vertical_line_depths = []
         
-        # First, find the floor plane and its height
-        floor_plane = None
-        floor_height = None
-        floor_depth_reference = None
-        
-        for plane_idx, plane_model in enumerate(plane_models):
-            normal = np.array(plane_model[:3])
-            normal = normal / np.linalg.norm(normal)
-            is_floor = abs(normal[1]) > 0.9
+        # Search around deep center for vertical lines with consistent depth
+        search_width = 100  # pixels to search around deep center
+        for x in range(max(0, int(deep_center[1] - search_width)), 
+                       min(depth_map.shape[1], int(deep_center[1] + search_width))):
+            # Get depth values along vertical line
+            depths = depth_map[:, x]
+            valid_depths = depths[depths > 0]
             
-            if is_floor:
-                floor_plane = plane_model
-                # Calculate floor height: if ax + by + cz + d = 0, then height = -d/b
-                floor_height = -plane_model[3] / normal[1]
-                floor_inlier_depths = depths[planes_inliers[plane_idx]]
-                floor_depth_reference = np.median(floor_inlier_depths)
+            if len(valid_depths) < depth_map.shape[0] * 0.5:  # Need at least 50% valid depths
+                continue
+                
+            # Calculate depth consistency along line
+            depth_std = np.std(valid_depths)
+            depth_mean = np.mean(valid_depths)
+            
+            if depth_std < 0.1 * depth_mean:  # Depth variation less than 10%
+                corner_found = True
+                corner_x = x
+                vertical_line_depths = valid_depths
                 break
         
-        if floor_plane is None:
-            print("Warning: No floor detected")
-            return intersection_lines, (np.zeros((0, 3)), np.array([])), (np.zeros((0, 3)), np.array([]))
+        # Step 3: Generate parallel depth sampling lines
+        sample_lines = []
+        num_lines = 20  # Number of vertical lines to sample
         
-        print(f"Floor height: {floor_height:.2f} meters")
-        print(f"Floor reference depth: {floor_depth_reference:.2f} meters")
-        min_wall_depth = floor_depth_reference * 0.7
-        height_tolerance = 0.3  # 30cm tolerance for floor points
+        if corner_found:
+            # Use corner as reference
+            start_x = max(0, corner_x - 200)
+            end_x = min(depth_map.shape[1], corner_x + 200)
+        else:
+            # Use center of frame as reference
+            center_x = depth_map.shape[1] // 2
+            start_x = max(0, center_x - 200)
+            end_x = min(depth_map.shape[1], center_x + 200)
         
-        # Function to calculate point height relative to floor plane
-        def get_point_height(point, floor_plane):
-            normal = floor_plane[:3] / np.linalg.norm(floor_plane[:3])
-            d = floor_plane[3]
-            # Distance from point to floor plane
-            height = (np.dot(normal, point) + d) / normal[1]
-            return height
+        x_positions = np.linspace(start_x, end_x, num_lines)
         
-        # Now classify points with height check
-        for plane_idx, inliers in enumerate(planes_inliers):
-            plane_model = plane_models[plane_idx]
-            normal = np.array(plane_model[:3])
-            normal = normal / np.linalg.norm(normal)
-            is_floor = abs(normal[1]) > 0.9
+        # Step 4: Find wall-floor intersections along each line
+        intersection_points = []
+        
+        def ransac_line_fit(depths, y_coords, num_iterations=100):
+            """Fit line to depth values using RANSAC"""
+            best_score = 0
+            best_slope = 0
+            best_intercept = 0
             
-            for idx in inliers:
-                if idx not in used_points:
-                    point = points[idx]
-                    depth = depths[idx]
-                    point_height = get_point_height(point, floor_plane)
+            for _ in range(num_iterations):
+                # Randomly select two points
+                idx = np.random.choice(len(depths), 2, replace=False)
+                y1, y2 = y_coords[idx]
+                d1, d2 = depths[idx]
+                
+                # Calculate slope and intercept
+                if y2 - y1 != 0:
+                    slope = (d2 - d1) / (y2 - y1)
+                    intercept = d1 - slope * y1
                     
-                    # Point is near floor height
-                    if abs(point_height) < height_tolerance:
-                        if is_floor:  # Only add as floor point if it belongs to floor plane
-                            floor_points.append(point)
-                            floor_depths.append(depth)
-                    else:  # Point is above floor
-                        if not is_floor and depth >= min_wall_depth:  # Only add as wall point if it's not floor plane
-                            wall_points.append(point)
-                            wall_depths.append(depth)
-                        
-                    used_points.add(idx)
+                    # Count inliers
+                    predicted = slope * y_coords + intercept
+                    inliers = np.abs(predicted - depths) < 0.1  # 10cm threshold
+                    score = np.sum(inliers)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_slope = slope
+                        best_intercept = intercept
+            
+            return best_slope, best_intercept
         
-        # Convert to numpy arrays for better handling
-        floor_points = np.array(floor_points) if floor_points else np.zeros((0, 3))
-        floor_depths = np.array(floor_depths) if floor_depths else np.array([])
-        wall_points = np.array(wall_points) if wall_points else np.zeros((0, 3))
-        wall_depths = np.array(wall_depths) if wall_depths else np.array([])
+        for x in x_positions:
+            x_int = int(x)
+            depths = depth_map[:, x_int]
+            valid_mask = depths > 0
+            valid_depths = depths[valid_mask]
+            valid_y = np.arange(depth_map.shape[0])[valid_mask]
+            
+            if len(valid_depths) < depth_map.shape[0] * 0.5:
+                continue
+            
+            # Fit lines to top and bottom portions
+            mid_idx = len(valid_depths) // 2
+            
+            # Bottom half (floor)
+            floor_slope, floor_intercept = ransac_line_fit(
+                valid_depths[:mid_idx], valid_y[:mid_idx])
+            
+            # Top half (wall)
+            wall_slope, wall_intercept = ransac_line_fit(
+                valid_depths[mid_idx:], valid_y[mid_idx:])
+            
+            # Find intersection
+            if abs(wall_slope - floor_slope) > 1e-6:
+                y_intersect = (floor_intercept - wall_intercept) / (wall_slope - floor_slope)
+                if 0 <= y_intersect < depth_map.shape[0]:
+                    # Calculate depth at intersection
+                    depth_intersect = wall_slope * y_intersect + wall_intercept
+                    intersection_points.append((x_int, int(y_intersect), depth_intersect))
         
-        print(f"Found {len(floor_points)} floor points and {len(wall_points)} wall points")
-        print(f"Filtered out points closer than {min_wall_depth:.2f} meters")
-        
-        return intersection_lines, (floor_points, floor_depths), (wall_points, wall_depths)
+        # Step 5: Convert intersection points to lines
+        intersection_lines = []
+        if len(intersection_points) >= 2:
+            # Sort points by x coordinate
+            points = np.array(intersection_points)
+            sorted_indices = np.argsort(points[:, 0])
+            points = points[sorted_indices]
+
+            # Group points into left and right sections
+            mid_x = (points[0, 0] + points[-1, 0]) / 2
+            left_points = points[points[:, 0] < mid_x]
+            right_points = points[points[:, 0] >= mid_x]
+
+            # Fit lines to each section if enough points
+            def fit_line_to_points(pts):
+                if len(pts) < 2:
+                    return None
+                # Use first and last point to define line
+                p1 = pts[0]
+                p2 = pts[-1]
+                point = np.array([p1[0], p1[1], p1[2]])  # x, y, depth
+                direction = np.array([p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]])
+                direction = direction / np.linalg.norm(direction)
+                return point, direction
+
+            # Create floor-wall intersection lines
+            if len(left_points) >= 2:
+                left_line = fit_line_to_points(left_points)
+                if left_line:
+                    point, direction = left_line
+                    intersection_lines.append((point, direction, True))  # True for floor-wall
+
+            if len(right_points) >= 2:
+                right_line = fit_line_to_points(right_points)
+                if right_line:
+                    point, direction = right_line
+                    intersection_lines.append((point, direction, True))
+
+            # Add vertical wall-wall intersections at corners if we found both lines
+            if len(intersection_lines) == 2:
+                # Use the intersection of the two floor lines to define the corner
+                p1, d1, _ = intersection_lines[0]
+                p2, d2, _ = intersection_lines[1]
+                
+                # Find intersection point of the two lines
+                # Use the first points of both lines to define the vertical line
+                corner_point = (p1 + p2) / 2
+                vertical_direction = np.array([0, 1, 0])  # Vertical direction
+                
+                # Add vertical wall-wall intersection
+                intersection_lines.append((corner_point, vertical_direction, False))  # False for wall-wall
+
+        # Create empty point clouds for compatibility
+        empty_points = np.zeros((0, 3))
+        empty_depths = np.array([])
+
+        return intersection_lines, (empty_points, empty_depths), (empty_points, empty_depths)
