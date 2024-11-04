@@ -94,23 +94,22 @@ class SurfaceDetector:
 
     @staticmethod
     def estimate_planes(points, distance_threshold=0.15, ransac_n=3, num_iterations=2000):
-        """Estimate planes with improved RANSAC parameters"""
+        """Estimate planes with tighter RANSAC parameters"""
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
         
-        # Estimate normals (this helps with plane detection)
-        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+        # Estimate normals with tighter radius
+        pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=30))
         
         plane_models = []
         planes_inliers = []
         remaining_points = pcd
-        min_points = max(100, len(points) // 20)  # At least 5% of points for a plane
+        min_points = max(100, len(points) // 20)
         
-        for _ in range(5):  # Try to find up to 5 planes
+        for _ in range(8):  # Increased max planes to 8 to catch more distinct surfaces
             if len(remaining_points.points) < min_points:
                 break
                 
-            # Segment plane with increased iterations and threshold
             plane_model, inliers = remaining_points.segment_plane(
                 distance_threshold=distance_threshold,
                 ransac_n=ransac_n,
@@ -120,14 +119,12 @@ class SurfaceDetector:
             if len(inliers) < min_points:
                 break
                 
-            # Ensure plane normal points towards camera
-            if plane_model[2] < 0:  # If Z component is negative
-                plane_model = -np.array(plane_model)  # Flip normal
+            if plane_model[2] < 0:
+                plane_model = -np.array(plane_model)
                 
             plane_models.append(plane_model)
             planes_inliers.append(inliers)
             
-            # Remove inliers and continue
             remaining_points = remaining_points.select_by_index(inliers, invert=True)
         
         return plane_models, planes_inliers

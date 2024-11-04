@@ -473,19 +473,22 @@ class DanceRoomTracker:
                 cv2.line(display_frame, points_2d[0], points_2d[1], color, 2)
 
     def draw_point_cloud(self, display_frame, floor_data, wall_data):
-        """Draw color-coded point cloud with depth-based intensity"""
+        """Draw color-coded point cloud with more extreme depth-based intensity"""
         floor_points, floor_depths = floor_data
         wall_points, wall_depths = wall_data
 
         def get_depth_intensity(depth, min_depth=0.5, max_depth=30.0):
-            """Convert depth to color intensity (0-255)"""
+            """Convert depth to color intensity with more contrast"""
             depth = np.clip(depth, min_depth, max_depth)
-            return int(255 * (1 - (depth - min_depth) / (max_depth - min_depth)))
+            # Apply non-linear scaling for more dramatic depth visualization
+            normalized = (depth - min_depth) / (max_depth - min_depth)
+            # Use power function to make closer points much brighter
+            intensity = int(255 * (1 - normalized ** 0.5))  # Changed from linear to square root
+            return intensity
 
-        # Draw points with larger radius for better visibility
-        point_radius = max(1, int(self.frame_width / 640))  # Scale point size with frame width
+        point_radius = max(1, int(self.frame_width / 640))
 
-        # Project floor points
+        # Project and draw floor points
         if len(floor_points) > 0:
             proj_floor_pts, floor_behind = self.virtualRoom.project_points(
                 floor_points,
@@ -493,12 +496,12 @@ class DanceRoomTracker:
                 [0,0,0],
                 self.frame_focal_lengths[self.current_frame_idx])
             
-            # Draw floor points with depth-based intensity
             for i, point in enumerate(proj_floor_pts):
                 intensity = get_depth_intensity(floor_depths[i])
+                # Make floor points more red
                 cv2.circle(display_frame, point, point_radius, (0, 0, intensity), -1)
 
-        # Project wall points
+        # Project and draw wall points
         if len(wall_points) > 0:
             proj_wall_pts, wall_behind = self.virtualRoom.project_points(
                 wall_points,
@@ -506,9 +509,9 @@ class DanceRoomTracker:
                 [0,0,0],
                 self.frame_focal_lengths[self.current_frame_idx])
             
-            # Draw wall points with depth-based intensity
             for i, point in enumerate(proj_wall_pts):
                 intensity = get_depth_intensity(wall_depths[i])
+                # Make wall points more green
                 cv2.circle(display_frame, point, point_radius, (0, intensity, 0), -1)
 
     def update_display(self, paused, lines=None):
