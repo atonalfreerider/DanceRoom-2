@@ -1,6 +1,8 @@
 import numpy as np
 import os
 from scipy.spatial.transform import Rotation
+import matplotlib.pyplot as plt
+import cv2
 
 class SurfaceDetector:
     def __init__(self, depth_dir, pixel_to_meter=0.000264583):
@@ -52,6 +54,23 @@ class SurfaceDetector:
         depth_map = self.load_depth_map(frame_num)
         if depth_map is None:
             return []
+
+        def colorize(depth_map, vmin=None, vmax=None, cmap='magma_r'):
+            """Colorize depth map using specified colormap"""
+            if vmin is None:
+                vmin = depth_map.min()
+            if vmax is None:
+                vmax = depth_map.max()
+                
+            normalized = np.clip((depth_map - vmin) / (vmax - vmin), 0, 1)
+            colormap = plt.get_cmap(cmap)
+            colored = (colormap(normalized)[:, :, :3] * 255).astype(np.uint8)
+            return colored
+
+        # Create debug visualization
+        vmax = depth_map.max()
+        depth_vis = colorize(depth_map, vmin=0.01, vmax=vmax)
+        debug_frame = cv2.cvtColor(depth_vis, cv2.COLOR_RGB2BGR)
 
         # Scale factors to convert from depth map to frame coordinates
         scale_x = frame_width / depth_map.shape[1]
@@ -281,5 +300,100 @@ class SurfaceDetector:
                         p1 = tuple(sorted_points[0])
                         p2 = tuple(sorted_points[-1])
                         intersection_lines.append(("floor", (p1, p2)))
+
+        # Storage for debug visualization
+        debug_points = {
+            'wall_depths': [],  # (x, depth) pairs
+            'floor_points': [],  # (x, y) pairs
+            'corner_candidates': [],  # x coordinates
+            'floor_wall_points': []  # (x, y) pairs
+        }
+
+        # Process vertical stripes
+        for x in range(0, depth_map.shape[1], stripe_width):
+            depths = depth_map[:, x]
+            valid_mask = depths > 0
+            valid_depths = depths[valid_mask]
+            valid_y = np.arange(depth_map.shape[0])[valid_mask]
+            
+            if len(valid_depths) < depth_map.shape[0] * 0.3:
+                continue
+
+            # Find wall depth
+            wall_depth = analyze_wall_depth(valid_depths)
+            if wall_depth is not None:
+                debug_points['wall_depths'].append((x, wall_depth))
+
+            # Find floor curve
+            floor_func, floor_params = analyze_floor_slope(valid_depths, valid_y)
+            if floor_func is not None:
+                # Store floor points for visualization
+                test_depths = np.linspace(valid_depths.min(), valid_depths.max(), 20)
+                floor_y_values = floor_func(test_depths)
+                debug_points['floor_points'].extend(zip([x]*len(test_depths), floor_y_values))
+
+        # Process horizontal stripes for corner detection
+        for y in range(0, depth_map.shape[0] // 2, stripe_width):
+            depths = depth_map[y, :]
+            valid_mask = depths > 0
+            valid_depths = depths[valid_mask]
+            valid_x = np.arange(depth_map.shape[1])[valid_mask]
+            
+            if len(valid_depths) < depth_map.shape[1] * 0.3:
+                continue
+
+            # Find deepest point
+            max_depth_idx = np.argmax(valid_depths)
+            if initial_points < max_depth_idx < len(valid_depths) - initial_points:
+                if (valid_depths[max_depth_idx] > valid_depths[max_depth_idx-initial_points:max_depth_idx]).all() and \
+                   (valid_depths[max_depth_idx] > valid_depths[max_depth_idx+1:max_depth_idx+initial_points+1]).all():
+                    corner_x = valid_x[max_depth_idx]
+                    debug_points['corner_candidates'].append((corner_x, y))
+
+        # Draw debug visualization
+        # Draw wall depths
+        for x, depth in debug_points['wall_depths']:
+            try:
+                cv2.circle(debug_frame, (int(x), int(depth)), 2, (0, 255, 0), -1)  # Green
+            except:
+                continue
+
+        # Draw floor points
+        for x, y in debug_points['floor_points']:
+            try:
+                if not np.isnan(x) and not np.isnan(y):  # Check for NaN values
+                    cv2.circle(debug_frame, (int(x), int(y)), 2, (255, 0, 0), -1)  # Blue
+            except:
+                continue
+
+        # Draw corner candidates
+        for x, y in debug_points['corner_candidates']:
+            try:
+                cv2.circle(debug_frame, (int(x), int(y)), 3, (0, 0, 255), -1)  # Red
+            except:
+                continue
+
+        # Draw floor-wall intersection points
+        for x, y in floor_wall_points:
+            try:
+                x_depth = int(x / scale_x)
+                y_depth = int(y / scale_y)
+                cv2.circle(debug_frame, (x_depth, y_depth), 4, (255, 255, 0), -1)  # Yellow
+            except:
+                continue
+
+        # Draw final intersection lines
+        for line_type, (p1, p2) in intersection_lines:
+            try:
+                p1_depth = (int(p1[0] / scale_x), int(p1[1] / scale_y))
+                p2_depth = (int(p2[0] / scale_x), int(p2[1] / scale_y))
+                color = (0, 255, 255) if line_type == "wall" else (255, 255, 0)  # Cyan for wall, Yellow for floor
+                cv2.line(debug_frame, p1_depth, p2_depth, color, 2)
+            except:
+                continue
+
+        # Show debug visualization
+        cv2.imshow('Depth Analysis Debug', debug_frame)
+        cv2.waitKey(1)
 
         return intersection_lines
