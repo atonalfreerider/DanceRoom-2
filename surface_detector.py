@@ -274,24 +274,64 @@ class SurfaceDetector:
         # Keep track of used points to avoid duplicates
         used_points = set()
         
-        # First, use the inlier indices from RANSAC
+        # First, find the floor plane and its height
+        floor_plane = None
+        floor_height = None
+        floor_depth_reference = None
+        
+        for plane_idx, plane_model in enumerate(plane_models):
+            normal = np.array(plane_model[:3])
+            normal = normal / np.linalg.norm(normal)
+            is_floor = abs(normal[1]) > 0.9
+            
+            if is_floor:
+                floor_plane = plane_model
+                # Calculate floor height: if ax + by + cz + d = 0, then height = -d/b
+                floor_height = -plane_model[3] / normal[1]
+                floor_inlier_depths = depths[planes_inliers[plane_idx]]
+                floor_depth_reference = np.median(floor_inlier_depths)
+                break
+        
+        if floor_plane is None:
+            print("Warning: No floor detected")
+            return intersection_lines, (np.zeros((0, 3)), np.array([])), (np.zeros((0, 3)), np.array([]))
+        
+        print(f"Floor height: {floor_height:.2f} meters")
+        print(f"Floor reference depth: {floor_depth_reference:.2f} meters")
+        min_wall_depth = floor_depth_reference * 0.7
+        height_tolerance = 0.3  # 30cm tolerance for floor points
+        
+        # Function to calculate point height relative to floor plane
+        def get_point_height(point, floor_plane):
+            normal = floor_plane[:3] / np.linalg.norm(floor_plane[:3])
+            d = floor_plane[3]
+            # Distance from point to floor plane
+            height = (np.dot(normal, point) + d) / normal[1]
+            return height
+        
+        # Now classify points with height check
         for plane_idx, inliers in enumerate(planes_inliers):
-            # Check if this is a floor or wall plane
             plane_model = plane_models[plane_idx]
             normal = np.array(plane_model[:3])
             normal = normal / np.linalg.norm(normal)
-            is_floor = abs(normal[1]) > 0.9  # Check Y component for floor
+            is_floor = abs(normal[1]) > 0.9
             
             for idx in inliers:
                 if idx not in used_points:
                     point = points[idx]
                     depth = depths[idx]
-                    if is_floor:
-                        floor_points.append(point)
-                        floor_depths.append(depth)
-                    else:
-                        wall_points.append(point)
-                        wall_depths.append(depth)
+                    point_height = get_point_height(point, floor_plane)
+                    
+                    # Point is near floor height
+                    if abs(point_height) < height_tolerance:
+                        if is_floor:  # Only add as floor point if it belongs to floor plane
+                            floor_points.append(point)
+                            floor_depths.append(depth)
+                    else:  # Point is above floor
+                        if not is_floor and depth >= min_wall_depth:  # Only add as wall point if it's not floor plane
+                            wall_points.append(point)
+                            wall_depths.append(depth)
+                        
                     used_points.add(idx)
         
         # Convert to numpy arrays for better handling
@@ -301,5 +341,6 @@ class SurfaceDetector:
         wall_depths = np.array(wall_depths) if wall_depths else np.array([])
         
         print(f"Found {len(floor_points)} floor points and {len(wall_points)} wall points")
+        print(f"Filtered out points closer than {min_wall_depth:.2f} meters")
         
         return intersection_lines, (floor_points, floor_depths), (wall_points, wall_depths)
