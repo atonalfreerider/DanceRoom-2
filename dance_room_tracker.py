@@ -460,17 +460,18 @@ class DanceRoomTracker:
         return []
 
     def draw_intersection_lines(self, display_frame, lines):
-        """Draw the intersection lines with proper clipping and color coding"""
-        for line in lines:
-            points_2d = self.project_line_to_2d(line)
-            if len(points_2d) == 2:  # Only draw if we have valid start and end points
-                point_on_line, direction, is_floor_wall = line
-                
-                # Color: red for floor-wall intersections, green for wall-wall
-                color = (0, 0, 255) if is_floor_wall else (0, 255, 0)
-                
-                # Draw the line segment
-                cv2.line(display_frame, points_2d[0], points_2d[1], color, 2)
+        """Draw the intersection lines directly in pixel coordinates"""
+        for line_type, line_points in lines:
+            p1, p2 = line_points
+            # Convert to integer pixel coordinates
+            pt1 = (int(p1[0]), int(p1[1]))
+            pt2 = (int(p2[0]), int(p2[1]))
+            
+            # Color: red for floor-wall intersections, green for wall-wall
+            color = (0, 0, 255) if line_type == "floor" else (0, 255, 0)
+            
+            # Draw the line segment
+            cv2.line(display_frame, pt1, pt2, color, 2)
 
     def draw_point_cloud(self, display_frame, floor_data, wall_data):
         """Draw color-coded point cloud with more extreme depth-based intensity"""

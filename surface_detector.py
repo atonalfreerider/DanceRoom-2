@@ -261,49 +261,43 @@ class SurfaceDetector:
         if depth_map is None:
             return [], (np.zeros((0, 3)), np.array([])), (np.zeros((0, 3)), np.array([]))
 
+        # Scale factors to convert from depth map to frame coordinates
+        scale_x = frame_width / depth_map.shape[1]
+        scale_y = frame_height / depth_map.shape[0]
+
         # Step 1: Find the deepest point(s) in the frame
-        max_depth = np.max(depth_map[depth_map > 0])  # Ignore zero depths
-        deep_points = np.where(depth_map > max_depth * 0.95)  # Points within 5% of max depth
-        
-        # Calculate centroid of deep region
+        max_depth = np.max(depth_map[depth_map > 0])
+        deep_points = np.where(depth_map > max_depth * 0.95)
         deep_center = np.array([np.mean(deep_points[0]), np.mean(deep_points[1])])
         
         # Step 2: Search for vertical corner edge
         corner_found = False
         corner_x = None
-        vertical_line_depths = []
         
-        # Search around deep center for vertical lines with consistent depth
-        search_width = 100  # pixels to search around deep center
+        search_width = 100
         for x in range(max(0, int(deep_center[1] - search_width)), 
                        min(depth_map.shape[1], int(deep_center[1] + search_width))):
-            # Get depth values along vertical line
             depths = depth_map[:, x]
             valid_depths = depths[depths > 0]
             
-            if len(valid_depths) < depth_map.shape[0] * 0.5:  # Need at least 50% valid depths
+            if len(valid_depths) < depth_map.shape[0] * 0.5:
                 continue
                 
-            # Calculate depth consistency along line
             depth_std = np.std(valid_depths)
             depth_mean = np.mean(valid_depths)
             
-            if depth_std < 0.1 * depth_mean:  # Depth variation less than 10%
+            if depth_std < 0.1 * depth_mean:
                 corner_found = True
                 corner_x = x
-                vertical_line_depths = valid_depths
                 break
         
-        # Step 3: Generate parallel depth sampling lines
-        sample_lines = []
-        num_lines = 20  # Number of vertical lines to sample
+        # Step 3: Generate parallel sampling lines
+        num_lines = 20
         
         if corner_found:
-            # Use corner as reference
             start_x = max(0, corner_x - 200)
             end_x = min(depth_map.shape[1], corner_x + 200)
         else:
-            # Use center of frame as reference
             center_x = depth_map.shape[1] // 2
             start_x = max(0, center_x - 200)
             end_x = min(depth_map.shape[1], center_x + 200)
@@ -314,25 +308,21 @@ class SurfaceDetector:
         intersection_points = []
         
         def ransac_line_fit(depths, y_coords, num_iterations=100):
-            """Fit line to depth values using RANSAC"""
             best_score = 0
             best_slope = 0
             best_intercept = 0
             
             for _ in range(num_iterations):
-                # Randomly select two points
                 idx = np.random.choice(len(depths), 2, replace=False)
                 y1, y2 = y_coords[idx]
                 d1, d2 = depths[idx]
                 
-                # Calculate slope and intercept
                 if y2 - y1 != 0:
                     slope = (d2 - d1) / (y2 - y1)
                     intercept = d1 - slope * y1
                     
-                    # Count inliers
                     predicted = slope * y_coords + intercept
-                    inliers = np.abs(predicted - depths) < 0.1  # 10cm threshold
+                    inliers = np.abs(predicted - depths) < 0.1
                     score = np.sum(inliers)
                     
                     if score > best_score:
@@ -352,78 +342,54 @@ class SurfaceDetector:
             if len(valid_depths) < depth_map.shape[0] * 0.5:
                 continue
             
-            # Fit lines to top and bottom portions
             mid_idx = len(valid_depths) // 2
             
-            # Bottom half (floor)
             floor_slope, floor_intercept = ransac_line_fit(
                 valid_depths[:mid_idx], valid_y[:mid_idx])
             
-            # Top half (wall)
             wall_slope, wall_intercept = ransac_line_fit(
                 valid_depths[mid_idx:], valid_y[mid_idx:])
             
-            # Find intersection
             if abs(wall_slope - floor_slope) > 1e-6:
                 y_intersect = (floor_intercept - wall_intercept) / (wall_slope - floor_slope)
                 if 0 <= y_intersect < depth_map.shape[0]:
-                    # Calculate depth at intersection
-                    depth_intersect = wall_slope * y_intersect + wall_intercept
-                    intersection_points.append((x_int, int(y_intersect), depth_intersect))
+                    # Scale coordinates to frame dimensions
+                    frame_x = x_int * scale_x
+                    frame_y = y_intersect * scale_y
+                    intersection_points.append((frame_x, frame_y))
         
         # Step 5: Convert intersection points to lines
         intersection_lines = []
         if len(intersection_points) >= 2:
-            # Sort points by x coordinate
             points = np.array(intersection_points)
             sorted_indices = np.argsort(points[:, 0])
             points = points[sorted_indices]
 
-            # Group points into left and right sections
             mid_x = (points[0, 0] + points[-1, 0]) / 2
             left_points = points[points[:, 0] < mid_x]
             right_points = points[points[:, 0] >= mid_x]
 
-            # Fit lines to each section if enough points
-            def fit_line_to_points(pts):
-                if len(pts) < 2:
-                    return None
-                # Use first and last point to define line
-                p1 = pts[0]
-                p2 = pts[-1]
-                point = np.array([p1[0], p1[1], p1[2]])  # x, y, depth
-                direction = np.array([p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]])
-                direction = direction / np.linalg.norm(direction)
-                return point, direction
-
             # Create floor-wall intersection lines
             if len(left_points) >= 2:
-                left_line = fit_line_to_points(left_points)
-                if left_line:
-                    point, direction = left_line
-                    intersection_lines.append((point, direction, True))  # True for floor-wall
+                p1 = left_points[0]
+                p2 = left_points[-1]
+                intersection_lines.append(("floor", (p1, p2)))
 
             if len(right_points) >= 2:
-                right_line = fit_line_to_points(right_points)
-                if right_line:
-                    point, direction = right_line
-                    intersection_lines.append((point, direction, True))
+                p1 = right_points[0]
+                p2 = right_points[-1]
+                intersection_lines.append(("floor", (p1, p2)))
 
-            # Add vertical wall-wall intersections at corners if we found both lines
+            # Add vertical wall-wall intersection if we have both lines
             if len(intersection_lines) == 2:
-                # Use the intersection of the two floor lines to define the corner
-                p1, d1, _ = intersection_lines[0]
-                p2, d2, _ = intersection_lines[1]
-                
-                # Find intersection point of the two lines
-                # Use the first points of both lines to define the vertical line
-                corner_point = (p1 + p2) / 2
-                vertical_direction = np.array([0, 1, 0])  # Vertical direction
-                
-                # Add vertical wall-wall intersection
-                intersection_lines.append((corner_point, vertical_direction, False))  # False for wall-wall
+                # Use midpoint between line endpoints as corner
+                left_end = intersection_lines[0][1][1]  # Second point of left line
+                right_start = intersection_lines[1][1][0]  # First point of right line
+                corner_x = (left_end[0] + right_start[0]) / 2
+                # Create vertical line from top to bottom of frame
+                intersection_lines.append(("wall", ((corner_x, 0), (corner_x, frame_height))))
 
-        # Create empty point clouds for compatibility
+        # Return empty point clouds for compatibility
         empty_points = np.zeros((0, 3))
         empty_depths = np.array([])
 
