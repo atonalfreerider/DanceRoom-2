@@ -281,7 +281,6 @@ class DanceRoomTracker:
             elif key == ord('d'):
                 lines = self.surfaceDetector.find_wall_floor_intersections_for_frame(
                     self.current_frame_idx,
-                    self.frame_focal_lengths[self.current_frame_idx],
                     self.frame_width,
                     self.frame_height)
                 self.update_display(True, lines)
@@ -528,9 +527,8 @@ class DanceRoomTracker:
         )
 
         if lines is not None:
-            intersection_lines, floor_data, wall_data = lines
-            # Draw point cloud first (so lines appear on top)
-            self.draw_point_cloud(display_frame, floor_data, wall_data)
+            intersection_lines = lines
+
             # Draw intersection lines
             self.draw_intersection_lines(display_frame, intersection_lines)
 
