@@ -115,11 +115,11 @@ class SurfaceDetector:
 
         def analyze_floor_slope(depths, y_coords, wall_depth):
             """
-            Analyze floor using quadratic regression from bottom up, handling both
-            wall intersections and obstacles
+            Analyze floor using quadratic regression from bottom up.
+            Returns quadratic function and its parameters.
             """
             if len(depths) < initial_points:
-                return None, None, None
+                return None, None
                 
             # Reverse arrays to work from bottom up
             depths = depths[::-1]
@@ -131,14 +131,13 @@ class SurfaceDetector:
             quad_func, params = fit_quadratic(points[:, 0], points[:, 1])
             
             if quad_func is None:
-                return None, None, None
+                return None, None
                 
             # Variables to track best fit
             best_points = floor_points.copy()
             best_func = quad_func
             best_params = params
             consecutive_outliers = 0
-            natural_intersection = None
             
             # Continue adding points while they follow the curve
             for i in range(initial_points, len(depths)):
@@ -148,16 +147,20 @@ class SurfaceDetector:
                 predicted_y = quad_func(depth)
                 error = abs(y - predicted_y) / abs(predicted_y)
                 
+                # Stop if we reach wall depth (but don't use this point for intersection)
+                if abs(depth - wall_depth) < 0.1:
+                    break
+                    
                 if error > outlier_threshold:
                     consecutive_outliers += 1
-                    if consecutive_outliers >= 3:  # Need 3 consecutive outliers to confirm deviation
+                    if consecutive_outliers >= 3:
                         break
                 else:
                     consecutive_outliers = 0
                     floor_points.append((depth, y))
                     
                     # Update quadratic fit every few points
-                    if len(floor_points) % 5 == 0:
+                    if len(floor_points) % 3 == 0:
                         points = np.array(floor_points)
                         new_func, new_params = fit_quadratic(points[:, 0], points[:, 1])
                         if new_func is not None:
@@ -166,16 +169,11 @@ class SurfaceDetector:
                             best_points = floor_points.copy()
                             best_func = quad_func
                             best_params = params
-                
-                # Check if we've reached the wall depth
-                if abs(depth - wall_depth) < 0.1:  # Within 10cm of wall
-                    natural_intersection = (depth, y)
-                    break
             
             if len(best_points) < min_points:
-                return None, None, None
+                return None, None
                 
-            return best_func, best_params, natural_intersection
+            return best_func, best_params
 
         def analyze_edge_slope(depths, x_coords, from_left=True):
             """Analyze wall slope at frame edges"""
@@ -275,37 +273,32 @@ class SurfaceDetector:
             
             if wall_depth is not None:
                 # Find floor curve starting from bottom of frame
-                floor_func, floor_params, natural_intersection = analyze_floor_slope(valid_depths, valid_y, wall_depth)
+                floor_func, floor_params = analyze_floor_slope(valid_depths, valid_y, wall_depth)
                 
                 if floor_func is not None:
-                    frame_x = x * scale_x
-                    
-                    if natural_intersection is not None:
-                        # Use the natural intersection point where floor meets wall
-                        _, intersect_y = natural_intersection
-                        frame_y = intersect_y * scale_y
-                    else:
-                        # Find intersection using quadratic curve
-                        try:
-                            y_values = np.linspace(0, frame_height, 100)
-                            depths = np.array([wall_depth] * len(y_values))
-                            differences = np.abs(floor_func(depths) - y_values)
-                            intersect_idx = np.argmin(differences)
-                            
-                            if differences[intersect_idx] < 10:  # Threshold for valid intersection
-                                frame_y = y_values[intersect_idx] * scale_y
-                            else:
-                                continue
-                        except:
-                            continue
-                    
-                    if 0 <= frame_y <= frame_height:
-                        floor_wall_points.append((frame_x, frame_y))
+                    # Get intersection point by directly evaluating quadratic at wall depth
+                    try:
+                        # The quadratic function already maps depth -> y
+                        intersect_y = floor_func(wall_depth)
                         
-                        # Add to debug visualization
-                        debug_points['floor_points'].extend([
-                            (x, y) for y in floor_func(np.linspace(valid_depths.min(), wall_depth, 20))
-                        ])
+                        # Verify the intersection point is reasonable
+                        if not np.isnan(intersect_y) and 0 <= intersect_y <= frame_height:
+                            frame_x = x * scale_x
+                            frame_y = intersect_y * scale_y
+                            floor_wall_points.append((frame_x, frame_y))
+                            
+                            # Add to debug visualization
+                            # Show floor points up to intersection
+                            vis_depths = np.linspace(valid_depths.min(), wall_depth, 20)
+                            vis_y = floor_func(vis_depths)
+                            debug_points['floor_points'].extend([
+                                (x, y) for y in vis_y if not np.isnan(y) and y <= intersect_y
+                            ])
+                            
+                            # Add intersection point to debug
+                            debug_points['floor_wall_points'].append((x, intersect_y))
+                    except:
+                        continue
 
         # Convert points to lines
         intersection_lines = []
@@ -369,7 +362,7 @@ class SurfaceDetector:
                 debug_points['wall_depths'].append((x, wall_depth))
 
             # Find floor curve
-            floor_func, floor_params, natural_intersection = analyze_floor_slope(valid_depths, valid_y, wall_depth)
+            floor_func, floor_params = analyze_floor_slope(valid_depths, valid_y, wall_depth)
             if floor_func is not None:
                 # Store floor points for visualization
                 test_depths = np.linspace(valid_depths.min(), valid_depths.max(), 20)
