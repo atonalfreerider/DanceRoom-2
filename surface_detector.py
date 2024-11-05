@@ -134,47 +134,74 @@ class SurfaceDetector:
                 
             return True
 
-        def analyze_floor_slope(depths, y_coords, wall_depth):
-            """Analyze floor using quadratic regression from bottom up"""
-            if len(depths) < initial_points:
+        def analyze_floor_slope(depths, y_coords):
+            """Analyze floor using quadratic regression, validating with decreasing slopes"""
+            if len(depths) < 30:  # Need enough points for at least 3 groups
                 return None, None
-                
+
             # Reverse arrays to work from bottom up
             depths = depths[::-1]
             y_coords = y_coords[::-1]
-            
-            # Take first N points to establish initial curve
-            floor_points = list(zip(depths[:initial_points], y_coords[:initial_points]))
-            points = np.array(floor_points)
+
+            # Calculate average slopes for groups of 10 points
+            group_size = 10
+            slopes = []
+
+            for i in range(0, len(depths) - group_size, group_size):
+                group1_depths = depths[i:i + group_size]
+                group1_y = y_coords[i:i + group_size]
+
+                # Calculate average slope for this group using linear regression
+                try:
+                    slope, _ = np.polyfit(group1_depths, group1_y, 1)
+                    slopes.append((slope, i))
+                except:
+                    continue
+
+            if len(slopes) < 3:  # Need at least 3 groups
+                return None, None
+
+            # Find all sequences of decreasing slopes
+            sequences = []
+            current_sequence = []
+
+            for i in range(len(slopes)):
+                if not current_sequence:
+                    current_sequence.append(slopes[i])
+                elif slopes[i][0] > current_sequence[-1][0]:  # Slope is increasing (becoming less negative)
+                    current_sequence.append(slopes[i])
+                else:  # Slope increased, start new sequence
+                    if len(current_sequence) >= 3:  # Only keep sequences with at least 3 groups
+                        sequences.append(current_sequence.copy())
+                    current_sequence = [slopes[i]]
+
+            # Don't forget to check the last sequence
+            if len(current_sequence) >= 3:
+                sequences.append(current_sequence)
+
+            if not sequences:  # No valid sequences found
+                return None, None
+
+            # Find the longest sequence
+            longest_sequence = max(sequences, key=len)
+
+            if len(longest_sequence) < 3:  # Double check we have enough groups
+                return None, None
+
+            # Get the range of points covered by the longest sequence
+            start_idx = longest_sequence[0][1]
+            end_idx = longest_sequence[-1][1] + group_size
+
+            # Fit quadratic to all points in the valid sequence
+            sequence_depths = depths[start_idx:end_idx]
+            sequence_y = y_coords[start_idx:end_idx]
+
+            points = np.array(list(zip(sequence_depths, sequence_y)))
             quad_func, params = fit_quadratic(points[:, 0], points[:, 1])
-            
+
             if quad_func is None:
                 return None, None
-                
-            # Continue adding points while they follow the curve
-            for i in range(initial_points, len(depths)):
-                depth = depths[i]
-                y = y_coords[i]
-                
-                predicted_y = quad_func(depth)
-                error = abs(y - predicted_y) / abs(predicted_y)
-                
-                # Stop if error exceeds threshold
-                if error > 0.15:  # 15% deviation threshold
-                    break
-                    
-                floor_points.append((depth, y))
-                
-                # Update quadratic fit
-                points = np.array(floor_points)
-                new_func, new_params = fit_quadratic(points[:, 0], points[:, 1])
-                if new_func is not None:
-                    quad_func = new_func
-                    params = new_params
-            
-            if len(floor_points) < min_points:
-                return None, None
-                
+
             return quad_func, params
 
         def analyze_edge_slope(depths, x_coords, from_left=True):
@@ -275,7 +302,7 @@ class SurfaceDetector:
             
             if wall_depth is not None:
                 # Find floor curve starting from bottom of frame
-                floor_func, floor_params = analyze_floor_slope(valid_depths, valid_y, wall_depth)
+                floor_func, floor_params = analyze_floor_slope(valid_depths, valid_y)
                 
                 if floor_func is not None:
                     # Get intersection point by directly evaluating quadratic at wall depth
@@ -364,7 +391,7 @@ class SurfaceDetector:
                 debug_points['wall_depths'].append((x, wall_depth))
 
             # Find floor curve
-            floor_func, floor_params = analyze_floor_slope(valid_depths, valid_y, wall_depth)
+            floor_func, floor_params = analyze_floor_slope(valid_depths, valid_y)
             if floor_func is not None:
                 # Store floor points for visualization
                 test_depths = np.linspace(valid_depths.min(), valid_depths.max(), 20)
