@@ -17,60 +17,40 @@ class VirtualRoom:
         self.frame_width = frame_width
         self.frame_height = frame_height
 
-    def project_point_to_planes(self, image_point, camera_poses):
-        """Project image point to world coordinates and determine which plane it lies on"""
-        fx = fy = min(self.frame_height, self.frame_width)
-        cx, cy = self.frame_width / 2, self.frame_height / 2
-        rotation = Rotation.from_quat(camera_poses['rotation'])
-
-        # Convert to normalized device coordinates - flip X sign to change orientation
-        x_ndc = -(image_point[0] - cx) / fx  # Negative sign to flip X orientation
-        y_ndc = (cy - image_point[1]) / fy  # Keep Y flipped
-
-        # Create ray in camera space (positive Z is forward)
-        ray_dir = np.array([
-            x_ndc / camera_poses['focal_length'],
-            y_ndc / camera_poses['focal_length'],
-            1.0  # Positive Z for forward
-        ])
-        ray_dir = ray_dir / np.linalg.norm(ray_dir)
-
-        # Transform ray to world space
-        world_ray = rotation.apply(ray_dir)
-
+    def project_point_to_planes(self, world_ray, camera_position):
         # Test intersections
         hw, hd = self.room_width / 2, self.room_depth / 2
         intersections = []
 
         # Test floor (y = 0)
         if abs(world_ray[1]) > 1e-6:
-            t = -camera_poses['position'][1] / world_ray[1]
+            t = -camera_position[1] / world_ray[1]
             if t > 0:
-                point = camera_poses['position'] + t * world_ray
+                point = camera_position + t * world_ray
                 if abs(point[0]) <= hw and abs(point[2]) <= hd:
                     intersections.append(('floor', point, t))
 
         # Test back wall (z = -hd)
         if abs(world_ray[2]) > 1e-6:
-            t = (-hd - camera_poses['position'][2]) / world_ray[2]
+            t = (-hd - camera_position[2]) / world_ray[2]
             if t > 0:
-                point = camera_poses['position'] + t * world_ray
+                point = camera_position + t * world_ray
                 if abs(point[0]) <= hw and 0 <= point[1] <= self.room_height:
                     intersections.append(('back_wall', point, t))
 
         # Test left wall (x = -hw)
         if abs(world_ray[0]) > 1e-6:
-            t = (-hw - camera_poses['position'][0]) / world_ray[0]
+            t = (-hw - camera_position[0]) / world_ray[0]
             if t > 0:
-                point = camera_poses['position'] + t * world_ray
+                point = camera_position + t * world_ray
                 if abs(point[2]) <= hd and 0 <= point[1] <= self.room_height:
                     intersections.append(('left_wall', point, t))
 
         # Test right wall (x = hw)
         if abs(world_ray[0]) > 1e-6:
-            t = (hw - camera_poses['position'][0]) / world_ray[0]
+            t = (hw - camera_position[0]) / world_ray[0]
             if t > 0:
-                point = camera_poses['position'] + t * world_ray
+                point = camera_position + t * world_ray
                 if abs(point[2]) <= hd and 0 <= point[1] <= self.room_height:
                     intersections.append(('right_wall', point, t))
 
@@ -81,23 +61,9 @@ class VirtualRoom:
 
         return None
 
-    def draw_virtual_room(self, frame, position, rotation, focal_length):
-        """Draw the virtual room borders and floor origin"""
-        # Get camera parameters
+    def project_points(self, vertices, rotation, position, focal_length):
         fx = fy = min(self.frame_height, self.frame_width)
         cx, cy = self.frame_width / 2, self.frame_height / 2
-        intrinsics = np.array([fx, fy, cx, cy])
-        rotation = Rotation.from_quat(rotation)
-
-        # Generate room vertices with origin at floor center
-        hw, hd = self.room_width / 2, self.room_depth / 2
-        h = self.room_height  # Full height, since y=0 is now at floor level
-        vertices = np.array([
-            [-hw, 0, hd], [hw, 0, hd],  # Floor front (closer to camera)
-            [-hw, 0, -hd], [hw, 0, -hd],  # Floor back (near back wall)
-            [-hw, h, hd], [hw, h, hd],  # Wall top front
-            [-hw, h, -hd], [hw, h, -hd]  # Wall top back
-        ])
 
         # Project vertices to image plane
         image_points = []
@@ -118,10 +84,34 @@ class VirtualRoom:
 
             # Convert to pixel coordinates with focal length
             pixel_x = int(x * fx * focal_length + cx)
-            pixel_y = int(y * fx * focal_length + cy)
+            pixel_y = int(y * fy * focal_length + cy)
 
             behind_camera.append(False)
             image_points.append((pixel_x, pixel_y))
+
+        return image_points, behind_camera
+
+    def draw_virtual_room(self, frame, position, rotation, focal_length):
+        """Draw the virtual room borders and floor origin"""
+        # Get camera parameters
+        fx = fy = min(self.frame_height, self.frame_width)
+        cx, cy = self.frame_width / 2, self.frame_height / 2
+
+        # Generate room vertices with origin at floor center
+        hw, hd = self.room_width / 2, self.room_depth / 2
+        h = self.room_height  # Full height, since y=0 is now at floor level
+        vertices = np.array([
+            [-hw, 0, hd], [hw, 0, hd],  # Floor front (closer to camera)
+            [-hw, 0, -hd], [hw, 0, -hd],  # Floor back (near back wall)
+            [-hw, h, hd], [hw, h, hd],  # Wall top front
+            [-hw, h, -hd], [hw, h, -hd]  # Wall top back
+        ])
+
+        image_points, behind_camera = self.project_points(
+            vertices,
+            rotation,
+            position,
+            focal_length)
 
         def is_point_in_frame(point):
             if point is None:

@@ -139,7 +139,7 @@ class PointTracker:
 
         return True
 
-    def find_new_points(self, pose_detections, virtualRoom, camera_poses):
+    def find_new_points(self, pose_detections, camera_poses):
         """Find new points and categorize them with a grid sampling technique."""
         MIN_POINTS_PER_SURFACE = 30
         GRID_SIZE = 6  # Number of grid cells per row and column
@@ -215,7 +215,7 @@ class PointTracker:
                                 point[1] += y_start
 
                                 # Project and categorize the point
-                                intersection = virtualRoom.project_point_to_planes(point, camera_poses)
+                                intersection = self.virtualRoom.project_point_to_planes(point, camera_poses)
                                 if intersection is not None:
                                     surface, world_pos = intersection[0], intersection[1]
                                     if surface == category:

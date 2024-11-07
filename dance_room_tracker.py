@@ -83,18 +83,18 @@ class DanceRoomTracker:
         for keyframe in sorted(self.rotation_keypoints.keys()):
             x = int(self.timeline_margin + (keyframe / self.total_frames) * timeline_width)
             cv2.rectangle(frame,
-                         (x - 2, timeline_y),
-                         (x + 2, h - self.timeline_margin),
-                         (0, 128, 255), -1)
-        
+                          (x - 2, timeline_y),
+                          (x + 2, h - self.timeline_margin),
+                          (0, 128, 255), -1)
+
         # Draw current frame marker
-        current_x = int(self.timeline_margin + 
-                       (self.current_frame_idx / self.total_frames) * timeline_width)
+        current_x = int(self.timeline_margin +
+                        (self.current_frame_idx / self.total_frames) * timeline_width)
         cv2.rectangle(frame,
-                     (current_x - self.scrubber_width//2, timeline_y),
-                     (current_x + self.scrubber_width//2, h - self.timeline_margin),
-                     (0, 255, 0), -1)
-    
+                      (current_x - self.scrubber_width // 2, timeline_y),
+                      (current_x + self.scrubber_width // 2, h - self.timeline_margin),
+                      (0, 255, 0), -1)
+
     def timeline_click_to_frame(self, x, y):
         """Convert timeline click to frame number"""
         timeline_y = self.frame_height - self.timeline_height
@@ -289,7 +289,7 @@ class DanceRoomTracker:
                     self.save_camera_tracking()
                     self.camera_has_moved = False  # Reset movement flag
 
-            elif key == 83 or playing: # FORWARD
+            elif key == 83 or playing:  # FORWARD
                 ret, frame = cap.read()
                 if not ret:
                     print("End of video reached")
@@ -322,55 +322,9 @@ class DanceRoomTracker:
         cap.release()
         cv2.destroyAllWindows()
 
-    #region DRAW
+    # region DRAW
 
-    def project_line_to_2d(self, line, focal_length):
-        """Project a 3D line onto the 2D image plane."""
-        point_on_line, direction = line
-        points_2d = []
-        
-        # Normalize direction vector
-        direction = direction / np.linalg.norm(direction)
-        
-        # Calculate appropriate scale for t based on scene size
-        scene_scale = np.linalg.norm(point_on_line)  # Use distance to origin as scale reference
-        t_scale = scene_scale * 2  # Adjust this multiplier as needed
-        
-        # Generate points along the line with adaptive scale
-        for t in np.linspace(-t_scale, t_scale, 20):
-            point_3d = point_on_line + t * direction
-            
-            # Skip points behind the camera
-            if point_3d[2] <= 0:
-                continue
-                
-            # Project using camera intrinsics
-            x_proj = (point_3d[0] / point_3d[2]) * focal_length
-            y_proj = (point_3d[1] / point_3d[2]) * focal_length
-            
-            # Convert to pixel coordinates
-            x_pixel = int(x_proj + self.frame_width / 2)
-            y_pixel = int(y_proj + self.frame_height / 2)
-            
-            # Only add points within frame bounds
-            if 0 <= x_pixel < self.frame_width and 0 <= y_pixel < self.frame_height:
-                points_2d.append((x_pixel, y_pixel))
-        
-        return points_2d
-
-    def draw_intersection_lines(self, display_frame, lines, focal_length):
-        """Draw the intersection lines with proper clipping"""
-        for line in lines:
-            points_2d = self.project_line_to_2d(line, focal_length)
-            if len(points_2d) >= 2:  # Only draw if we have at least 2 valid points
-                # Draw line segments between consecutive points
-                for i in range(len(points_2d) - 1):
-                    pt1 = points_2d[i]
-                    pt2 = points_2d[i + 1]
-                    cv2.line(display_frame, pt1, pt2, (0, 255, 0), 2)
-
-    # Updated update_display method to include intersection line drawing
-    def update_display(self, paused, lines=None):
+    def update_display(self, paused):
         """Update display with current frame and overlays"""
         display_frame = self.current_frame.copy()
 
@@ -378,12 +332,9 @@ class DanceRoomTracker:
         display_frame = self.virtualRoom.draw_virtual_room(
             display_frame,
             self.initial_camera_pose['position'],
-            self.frame_rotations[self.current_frame_idx],
+            Rotation.from_quat(self.frame_rotations[self.current_frame_idx]),
             self.frame_focal_lengths[self.current_frame_idx]
         )
-
-        if lines is not None:
-            self.draw_intersection_lines(display_frame, lines, self.frame_focal_lengths[self.current_frame_idx])
 
         # Add UI text
         if paused:
@@ -408,27 +359,9 @@ class DanceRoomTracker:
 
         cv2.imshow('Dance Room Tracker', display_frame)
 
-    def prepare_display_frame(self):
-        """Prepare frame for display during tracking"""
-        display_frame = self.current_frame.copy()
-        display_frame = self.virtualRoom.draw_virtual_room(
-            display_frame,
-            self.initial_camera_pose['position'],
-            self.frame_rotations[self.current_frame_idx],
-            self.frame_focal_lengths[self.current_frame_idx]
-        )
+    # endregion
 
-        # Add point counts in top-left corner
-        y_offset = 30
-        cv2.putText(display_frame, f"Frame: {self.current_frame_idx}",
-                    (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        y_offset += 20
-
-        return display_frame
-
-    #endregion
-
-    #region CAMERA
+    # region CAMERA
 
     def handle_camera_movement(self, key):
         """Handle keyboard input for camera movement"""
@@ -450,7 +383,9 @@ class DanceRoomTracker:
         current_focal_length = None
         update = False
 
-        if key == ord('w') or key == ord('s') or key == ord('a') or key == ord('d') or key == ord('q') or key == ord('e') or key == ord('j') or key == ord('k') or key == ord('i') or key == ord('l') or key == ord('z') or key == ord('x') or key == ord('o') or key == ord('p'):
+        if key == ord('w') or key == ord('s') or key == ord('a') or key == ord('d') or key == ord('q') or key == ord(
+                'e') or key == ord('j') or key == ord('k') or key == ord('i') or key == ord('l') or key == ord(
+                'z') or key == ord('x') or key == ord('o') or key == ord('p'):
             update = True
             current_position = self.initial_camera_pose['position']
             current_rotation = self.initial_camera_pose['rotation']
@@ -503,7 +438,8 @@ class DanceRoomTracker:
         current_focal_length = None
         update = False
 
-        if key == ord('j') or key == ord('k') or key == ord('i') or key == ord('l') or key == ord('z') or key == ord('x') or key == ord('o') or key == ord('p'):
+        if key == ord('j') or key == ord('k') or key == ord('i') or key == ord('l') or key == ord('z') or key == ord(
+                'x') or key == ord('o') or key == ord('p'):
             current_rotation = Rotation.from_quat(self.frame_rotations[self.current_frame_idx])
             current_focal_length = self.frame_focal_lengths[self.current_frame_idx]
             update = True
@@ -536,7 +472,7 @@ class DanceRoomTracker:
 
         return update
 
-    #endregion
+    # endregion
 
     # region FILE IO
 
@@ -645,7 +581,6 @@ class DanceRoomTracker:
             self.frame_focal_lengths[frame_idx] = self.processed_vo_focal_lengths[frame_idx]
 
         print("set rotations and focal lengths from adjusted visual odometry")
-
 
     def get_total_frames(self):
         """Get total number of frames in video"""
