@@ -6,7 +6,6 @@ import json
 
 import utils
 from virtual_room import VirtualRoom
-import surface_detector
 
 
 class DanceRoomTracker:
@@ -15,8 +14,6 @@ class DanceRoomTracker:
         self.output_dir = output_dir
         self.initial_camera_pose_json_path = output_dir + '/initial_camera_pose.json'
         self.camera_tracking_json_path = output_dir + '/camera_tracking.json'
-
-        self.surfaceDetector = surface_detector.SurfaceDetector(output_dir + "/depth")
         
         # Load initial camera pose (position and initial orientation/focal)
         self.initial_camera_pose = self.load_initial_camera_pose()
@@ -278,11 +275,6 @@ class DanceRoomTracker:
                 self.save_camera_tracking()
                 print("Saved tracking data")
 
-            elif key == ord('d'):
-                lines = self.surfaceDetector.find_wall_floor_intersections_for_frame(
-                    self.current_frame_idx, self.frame_focal_lengths[self.current_frame_idx])
-                self.update_display(True, lines)
-            
             elif key == ord(' '):  # Toggle play/pause
                 playing = not playing
                 print(f"Playback: {'Playing' if playing else 'Paused'}")
