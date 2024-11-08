@@ -137,10 +137,10 @@ sympy                     1.13.1                   pypi_0    pypi
 tenacity                  9.0.0                    pypi_0    pypi
 tensorboard               2.18.0                   pypi_0    pypi
 tensorboard-data-server   0.7.2                    pypi_0    pypi
-tensorflow                2.18.0                   pypi_0    pypi
+tensorflow                2.14.1                   pypi_0    pypi
 tensorflow-io-gcs-filesystem 0.37.1                   pypi_0    pypi
 termcolor                 2.5.0                    pypi_0    pypi
-tf-keras                  2.18.0                   pypi_0    pypi
+tf-keras                  2.12.0                   pypi_0    pypi
 threadpoolctl             3.5.0                    pypi_0    pypi
 tk                        8.6.13          noxft_h4845f30_101    conda-forge
 torch                     2.5.1                    pypi_0    pypi
