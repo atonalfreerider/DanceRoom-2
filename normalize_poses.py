@@ -258,12 +258,3 @@ class PoseNormalizer:
         # Process video
         normalized_video_path = os.path.join(self.output_dir, 'normalized_video.mp4')
         self.process_video(normalized_video_path)
-        
-        # Generate debug video
-        debug_video = DebugVideo(normalized_video_path, self.output_dir)
-        debug_video.generate_debug_video()
-        
-        print("Processing complete. Output files:")
-        print(f"1. Normalized video: {normalized_video_path}")
-        print(f"2. Debug video: {os.path.join(self.output_dir, 'debug_video.mp4')}")
-        print(f"3. Normalized pose data: {lead_normalized_path} and {follow_normalized_path}")

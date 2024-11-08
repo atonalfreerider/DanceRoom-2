@@ -6,6 +6,9 @@ import tqdm
 from deepface import DeepFace
 from collections import defaultdict
 
+import utils
+
+
 # uses DeepFace to find self-similar faces and gender
 class DancerTracker:
     def __init__(self, input_path, output_dir):
@@ -17,7 +20,7 @@ class DancerTracker:
         self.lead_file = os.path.join(output_dir, 'lead.json')
         self.follow_file = os.path.join(output_dir, 'follow.json')
 
-        self.detections = self.load_json(self.detections_file)
+        self.detections = utils.load_json_integer_keys(self.detections_file)
         
         # Get input video dimensions
         cap = cv2.VideoCapture(input_path)
@@ -114,8 +117,7 @@ class DancerTracker:
         cap.release()
         
         # Save analysis cache
-        with open(self.analysis_cache_file, 'w') as f:
-            json.dump(self.face_analysis, f, indent=2)
+        utils.save_json(self.face_analysis, self.analysis_cache_file)
         
         # Print statistics
         male_count = sum(1 for data in self.face_analysis.values() 
@@ -189,8 +191,8 @@ class DancerTracker:
         lead_poses, follow_poses = self.assign_roles_over_time(track_analysis)
         
         # Save assignments
-        self.save_json(lead_poses, self.lead_file)
-        self.save_json(follow_poses, self.follow_file)
+        utils.save_numpy_json(lead_poses, self.lead_file)
+        utils.save_numpy_json(follow_poses, self.follow_file)
 
     def analyze_tracks_demographics(self):
         """Analyze demographic consistency with emphasis on track stability"""
@@ -703,32 +705,6 @@ class DancerTracker:
             }
 
     #region UTILITY
-
-    @staticmethod
-    def load_json(json_path):
-        with open(json_path, 'r') as f:
-            detections = json.load(f)
-
-        # Convert all frame keys to integers
-        return {int(frame): data for frame, data in detections.items()}
-
-    def save_json(self, data, file_path):
-        with open(file_path, 'w') as f:
-            json.dump(self.numpy_to_python(data), f, indent=2)
-
-    def numpy_to_python(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return self.numpy_to_python(obj.tolist())
-        elif isinstance(obj, list):
-            return [self.numpy_to_python(item) for item in obj]
-        elif isinstance(obj, dict):
-            return {key: self.numpy_to_python(value) for key, value in obj.items()}
-        else:
-            return obj
 
     @staticmethod
     def _calculate_person_size(keypoints):

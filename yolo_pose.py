@@ -1,3 +1,4 @@
+import os
 import cv2
 from ultralytics import YOLO
 from pathlib import Path
@@ -5,11 +6,11 @@ import tqdm
 
 import utils
 
-
+# detects all poses inside a video (or loads from cache)
 class YOLOPose:
     def __init__(self, video_path, output_dir):
         self.video_path = video_path
-        self.detections_file = output_dir + "/detections.json"
+        self.detections_file = os.path.join(output_dir, 'detections.json')
         self.detections = utils.load_json(self.detections_file)
 
     def detect_poses(self):

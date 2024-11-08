@@ -10,15 +10,24 @@ from debug_video import DebugVideo
 def main(video_path, output_dir):
     os.makedirs(output_dir, exist_ok=True)
 
+    # DANCER TRACKING
+
     # use YOLOv11-pose to detect poses of figures and track them with IoU. Output detections.json for later use
     yoloPose = yolo_pose.YOLOPose(video_path, output_dir)
     yoloPose.detect_poses()
 
+    # use DeepFace (VGG-Face) to track dancers by face id
     dancer_tracker = DancerTracker(video_path, output_dir)
     dancer_tracker.process_video()
 
+    #TODO user input to correct dancer tracks
+
+    # ROOM TRACKING
+
     danceRoomTracker = dance_room_tracker.DanceRoomTracker(video_path, output_dir)
     danceRoomTracker.run_video_loop()
+
+    # NORMALIZE AND SMOOTH
 
     normalizer = PoseNormalizer(video_path, output_dir)
     normalizer.run()

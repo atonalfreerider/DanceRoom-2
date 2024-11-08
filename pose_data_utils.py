@@ -1,5 +1,7 @@
-import json
 from collections import OrderedDict
+
+import utils
+
 
 class PoseDataUtils:
     @staticmethod
@@ -54,13 +56,5 @@ class PoseDataUtils:
             print(f"Warning: All poses are empty. Not saving to {output_file}")
             return
 
-        with open(output_file, 'w') as f:
-            json.dump(formatted_poses, f, indent=2)
+        utils.save_json(formatted_poses, output_file)
 
-    @staticmethod
-    def load_poses(json_path):
-        with open(json_path, 'r') as f:
-            detections = json.load(f)
-
-        # Ensure all frame keys are integers
-        return {int(frame): data for frame, data in detections.items()}

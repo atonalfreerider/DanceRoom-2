@@ -1,19 +1,22 @@
+import os
 from pathlib import Path
-import argparse
 from pose_data_utils import PoseDataUtils
+import utils
 
 class TemporalSmoothing:
     def __init__(self, output_dir):
         self.output_dir = Path(output_dir)
-        self.lead_file = self.output_dir / "lead-normalized.json"
-        self.follow_file = self.output_dir / "follow-normalized.json"
-        self.smoothed_lead_file = self.output_dir / "lead_smoothed.json"
-        self.smoothed_follow_file = self.output_dir / "follow_smoothed.json"
+        self.lead_file = os.path.join(output_dir, 'lead-normalized.json')
+        self.follow_file = os.path.join(output_dir, 'follow-normalized.json')
+        self.smoothed_lead_file = os.path.join(output_dir, 'lead_smoothed.json')
+        self.smoothed_follow_file = os.path.join(output_dir, 'follow_smoothed.json')
 
-    def is_valid_keypoint(self, keypoint):
+    @staticmethod
+    def is_valid_keypoint(keypoint):
         return keypoint[0] != 0 or keypoint[1] != 0
 
-    def is_empty_pose(self, pose):
+    @staticmethod
+    def is_empty_pose(pose):
         return all(kp == [0, 0, 0] for kp in pose['keypoints'])
 
     def interpolate_missing_poses(self, role_data):
@@ -54,8 +57,8 @@ class TemporalSmoothing:
         return interpolated_data
 
     def run(self):
-        lead_data = PoseDataUtils.load_poses(self.lead_file)
-        follow_data = PoseDataUtils.load_poses(self.follow_file)
+        lead_data = utils.load_poses_integer_keys(self.lead_file)
+        follow_data = utils.load_poses_integer_keys(self.follow_file)
 
         interpolated_lead = self.interpolate_missing_poses(lead_data)
         interpolated_follow = self.interpolate_missing_poses(follow_data)
@@ -65,14 +68,3 @@ class TemporalSmoothing:
 
         print(f"Interpolated lead data saved to: {self.smoothed_lead_file}")
         print(f"Interpolated follow data saved to: {self.smoothed_follow_file}")
-
-def main():
-    parser = argparse.ArgumentParser(description="Interpolate missing poses for lead and follow dancers.")
-    parser.add_argument("output_dir", help="Path to the output directory containing JSON files")
-    args = parser.parse_args()
-
-    smoother = TemporalSmoothing(args.output_dir)
-    smoother.run()
-
-if __name__ == "__main__":
-    main()

@@ -12,8 +12,8 @@ class DanceRoomTracker:
     def __init__(self, video_path, output_dir):
         self.video_path = video_path
         self.output_dir = output_dir
-        self.initial_camera_pose_json_path = output_dir + '/initial_camera_pose.json'
-        self.camera_tracking_json_path = output_dir + '/camera_tracking.json'
+        self.initial_camera_pose_json_path = os.path.join(output_dir, 'initial_camera_pose.json')
+        self.camera_tracking_json_path = os.path.join(output_dir, 'camera_tracking.json')
         
         # Load initial camera pose (position and initial orientation/focal)
         self.initial_camera_pose = self.load_initial_camera_pose()
