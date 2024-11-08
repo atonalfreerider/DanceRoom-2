@@ -3,6 +3,8 @@ import argparse
 import sam2
 import yolo_pose
 import dance_room_tracker
+from normalize_poses import PoseNormalizer
+from debug_video import DebugVideo
 
 def main(video_path, output_dir):
     os.makedirs(output_dir, exist_ok=True)
@@ -16,8 +18,12 @@ def main(video_path, output_dir):
     #yoloPose.detect_poses()
 
     # Initialize room tracking and dancer selection
-    danceRoomTracker = dance_room_tracker.DanceRoomTracker(video_path, output_dir)
-    danceRoomTracker.run_video_loop()  # New method for the updated workflow
+    #danceRoomTracker = dance_room_tracker.DanceRoomTracker(video_path, output_dir)
+    #danceRoomTracker.run_video_loop()  # New method for the updated workflow
+
+    #normalizer = PoseNormalizer(video_path, output_dir)
+    #normalizer.run()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process video for person segmentation and room orientation.")
