@@ -36,7 +36,7 @@ class YOLOPose:
         frame_count = 0
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        pb = tqdm.tqdm(total=total_frames, desc="Processing video frames")
+        pb = tqdm.tqdm(total=total_frames, desc="Processing poses from video frames with YOLO")
 
         while cap.isOpened():
             ret, frame = cap.read()

@@ -14,7 +14,6 @@ class DancerTracker:
     def __init__(self, input_path, output_dir):
         self.input_path = input_path
         self.output_dir = output_dir
-        self.depth_dir = os.path.join(output_dir, 'depth')
 
         self.detections_file = os.path.join(output_dir, 'detections.json')
         self.lead_file = os.path.join(output_dir, 'lead.json')

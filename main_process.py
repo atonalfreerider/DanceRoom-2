@@ -20,6 +20,7 @@ def main(video_path, output_dir):
     dancer_tracker = DancerTracker(video_path, output_dir)
     dancer_tracker.process_video()
 
+    return
     #TODO user input to correct dancer tracks
 
     # ROOM TRACKING
