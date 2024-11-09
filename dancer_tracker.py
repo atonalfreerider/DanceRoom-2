@@ -12,60 +12,60 @@ import utils
 # uses DeepFace to find self-similar faces and gender
 class DancerTracker:
     def __init__(self, input_path:str, output_dir:str):
-        self.input_path = input_path
-        self.output_dir = output_dir
+        self.__input_path = input_path
+        self.__output_dir = output_dir
 
-        self.detections_file = os.path.join(output_dir, 'detections.json')
-        self.lead_file = os.path.join(output_dir, 'lead.json')
-        self.follow_file = os.path.join(output_dir, 'follow.json')
+        self.__detections_file = os.path.join(output_dir, 'detections.json')
+        self.__lead_file = os.path.join(output_dir, 'lead.json')
+        self.__follow_file = os.path.join(output_dir, 'follow.json')
 
-        self.detections = utils.load_json_integer_keys(self.detections_file)
+        self.__detections = utils.load_json_integer_keys(self.__detections_file)
         
         # Get input video dimensions
         cap = cv2.VideoCapture(input_path)
-        self.frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.__frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.__frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         cap.release()
 
         # Add new path for analysis cache
-        self.analysis_cache_file = os.path.join(output_dir, 'face_analysis.json')
+        self.__analysis_cache_file = os.path.join(output_dir, 'face_analysis.json')
 
-        self.face_analysis = {}
+        self.__face_analysis = {}
 
     def process_video(self):
         # Check if we have cached analysis
-        if os.path.exists(self.analysis_cache_file):
+        if os.path.exists(self.__analysis_cache_file):
             print("Loading cached face analysis results...")
-            with open(self.analysis_cache_file, 'r') as f:
-                self.face_analysis = json.load(f)
+            with open(self.__analysis_cache_file, 'r') as f:
+                self.__face_analysis = json.load(f)
             
             # Print statistics from cache
-            male_count = sum(1 for data in self.face_analysis.values() 
+            male_count = sum(1 for data in self.__face_analysis.values()
                             if data['dominant_gender'] == 'Man')
-            female_count = sum(1 for data in self.face_analysis.values() 
+            female_count = sum(1 for data in self.__face_analysis.values()
                               if data['dominant_gender'] == 'Woman')
             print(f"Loaded {male_count} male and {female_count} female cached analyses")
         else:
-            self.analyze_video_faces()
+            self.__analyze_video_faces()
 
-        if os.path.exists(self.lead_file) and os.path.exists(self.follow_file):
+        if os.path.exists(self.__lead_file) and os.path.exists(self.__follow_file):
             print("lead and follow already exist. skipping")
             return
 
-        self.create_role_assignments()
+        self.__create_role_assignments()
         print("Lead and follow tracked using DeepFace approach")
 
-    def analyze_video_faces(self):
+    def __analyze_video_faces(self):
         """Extract and analyze faces directly from video frames"""
         print("Analyzing faces from video...")
         
         # Open video capture
-        cap = cv2.VideoCapture(self.input_path)
+        cap = cv2.VideoCapture(self.__input_path)
         if not cap.isOpened():
-            raise Exception(f"Could not open video file: {self.input_path}")
+            raise Exception(f"Could not open video file: {self.__input_path}")
         
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        min_height_threshold = 0.6 * self.frame_height
+        min_height_threshold = 0.6 * self.__frame_height
         
         for frame_num in tqdm.tqdm(range(total_frames)):
             # Read frame
@@ -73,14 +73,14 @@ class DancerTracker:
             if not ret:
                 continue
                 
-            detections_in_frame = self.detections.get(frame_num, [])
+            detections_in_frame = self.__detections.get(frame_num, [])
             
             for detection in detections_in_frame:
                 bbox = detection['bbox']
                 height = bbox[3] - bbox[1]
                 
                 if height >= min_height_threshold:
-                    head_bbox = self.get_head_bbox(detection['keypoints'])
+                    head_bbox = self.__get_head_bbox(detection['keypoints'])
                     if head_bbox:
                         x1, y1, x2, y2 = head_bbox
                         head_img = frame[y1:y2, x1:x2]
@@ -102,7 +102,7 @@ class DancerTracker:
                                 face_key = f"{frame_num:06d}-{detection['id']}"
                                 
                                 # Store analysis results
-                                self.face_analysis[face_key] = {
+                                self.__face_analysis[face_key] = {
                                     'frame_num': frame_num,
                                     'track_id': detection['id'],
                                     'dominant_gender': result['dominant_gender'],
@@ -120,24 +120,24 @@ class DancerTracker:
         cap.release()
         
         # Save analysis cache
-        utils.save_json(self.face_analysis, self.analysis_cache_file)
+        utils.save_json(self.__face_analysis, self.__analysis_cache_file)
         
         # Print statistics
-        male_count = sum(1 for data in self.face_analysis.values() 
+        male_count = sum(1 for data in self.__face_analysis.values()
                         if data['dominant_gender'] == 'Man')
-        female_count = sum(1 for data in self.face_analysis.values() 
+        female_count = sum(1 for data in self.__face_analysis.values()
                           if data['dominant_gender'] == 'Woman')
         print(f"\nAnalyzed {male_count} male and {female_count} female faces")
         
         # Print race statistics
         race_counts = defaultdict(int)
-        for data in self.face_analysis.values():
+        for data in self.__face_analysis.values():
             race_counts[data['dominant_race']] += 1
         print("\nRace distribution:")
         for race, count in race_counts.items():
             print(f"{race}: {count}")
 
-    def get_head_bbox(self, keypoints, padding_percent=0.25):
+    def __get_head_bbox(self, keypoints, padding_percent=0.25):
         """Extract square head bounding box from keypoints with padding"""
         # Get head keypoints (nose, eyes, ears) - indices 0-4
         head_points = keypoints[:5]
@@ -178,26 +178,26 @@ class DancerTracker:
         # Ensure bounds are within frame
         x_min = max(0, x_min)
         y_min = max(0, y_min)
-        x_max = min(self.frame_width, x_max)
-        y_max = min(self.frame_height, y_max)
+        x_max = min(self.__frame_width, x_max)
+        y_max = min(self.__frame_height, y_max)
 
         return [int(x_min), int(y_min), int(x_max), int(y_max)]
 
-    def create_role_assignments(self):
+    def __create_role_assignments(self):
         """Create lead and follow assignments using multi-factor analysis"""
         print("Creating role assignments with multi-factor analysis...")
         
         # First pass: Analyze tracks for gender and race consistency
-        track_analysis = self.analyze_tracks_demographics()
+        track_analysis = self.__analyze_tracks_demographics()
         
         # Second pass: Create frame-by-frame assignments
-        lead_poses, follow_poses = self.assign_roles_over_time(track_analysis)
+        lead_poses, follow_poses = self.__assign_roles_over_time(track_analysis)
         
         # Save assignments
-        utils.save_numpy_json(lead_poses, self.lead_file)
-        utils.save_numpy_json(follow_poses, self.follow_file)
+        utils.save_numpy_json(lead_poses, self.__lead_file)
+        utils.save_numpy_json(follow_poses, self.__follow_file)
 
-    def analyze_tracks_demographics(self):
+    def __analyze_tracks_demographics(self):
         """Analyze demographic consistency with emphasis on track stability"""
         # Initialize track_data with explicit types for each field
         track_data = defaultdict(lambda: {
@@ -217,19 +217,19 @@ class DancerTracker:
         simplified_race = 'dark'
         
         # First pass: Collect all data
-        for file_name, analysis in self.face_analysis.items():
+        for file_name, analysis in self.__face_analysis.items():
             track_id = analysis['track_id']
             frame_num = analysis['frame_num']
             
             detection = next(
-                (d for d in self.detections.get(frame_num, []) 
+                (d for d in self.__detections.get(frame_num, [])
                  if d['id'] == track_id),
                 None
             )
 
             if detection:
                 # Add size measurement
-                size = self._calculate_person_size(detection['keypoints'])
+                size = self.__calculate_person_size(detection['keypoints'])
                 if size > 0:
                     track_data[track_id]['size_ratios'].append(size)
 
@@ -257,7 +257,7 @@ class DancerTracker:
         # Identify stable tracking segments
         for track_id, data in track_data.items():
             positions = sorted(data['positions'], key=lambda x: x[0])
-            stable_segments = self._find_stable_segments(positions)
+            stable_segments = self.__find_stable_segments(positions)
             data['stable_segments'] = stable_segments
             
             # Only consider high confidence points within stable segments
@@ -265,13 +265,13 @@ class DancerTracker:
                 segment_frames = range(segment['start_frame'], segment['end_frame'] + 1)
                 for frame_num in segment_frames:
                     analysis = next(
-                        (a for a in self.face_analysis.values()
+                        (a for a in self.__face_analysis.values()
                          if a['frame_num'] == frame_num and a['track_id'] == track_id),
                         None
                     )
                     if analysis and analysis['gender_confidence'] > 0.9:
                         detection = next(
-                            (d for d in self.detections.get(frame_num, [])
+                            (d for d in self.__detections.get(frame_num, [])
                              if d['id'] == track_id),
                             None
                         )
@@ -289,11 +289,11 @@ class DancerTracker:
                             })
         
         # Second pass: Calculate relative sizes for each frame with two people
-        for frame_num in self.detections:
-            detections = self.detections[frame_num]
+        for frame_num in self.__detections:
+            detections = self.__detections[frame_num]
             if len(detections) == 2:
                 det1, det2 = detections
-                ratio = self._calculate_relative_size_ratio(
+                ratio = self.__calculate_relative_size_ratio(
                     det1['keypoints'],
                     det2['keypoints']
                 )
@@ -386,11 +386,11 @@ class DancerTracker:
         
         return track_analysis
 
-    def _find_stable_segments(self, positions):
+    def __find_stable_segments(self, positions):
         """Identify segments of stable tracking based on motion consistency"""
         stable_segments = []
         current_segment = None
-        max_speed = self.frame_width * 0.1  # 10% of frame width per frame
+        max_speed = self.__frame_width * 0.1  # 10% of frame width per frame
         
         for i in range(len(positions) - 1):
             curr_frame, curr_x, curr_y = positions[i]
@@ -427,7 +427,7 @@ class DancerTracker:
         
         return stable_segments
 
-    def assign_roles_over_time(self, track_analysis):
+    def __assign_roles_over_time(self, track_analysis):
         """Assign roles with emphasis on track stability and ensuring role coverage"""
         lead_poses = {}
         follow_poses = {}
@@ -437,10 +437,10 @@ class DancerTracker:
         current_follow = None
         
         # Process frames in order
-        all_frames = sorted(set(self.detections.keys()))
+        all_frames = sorted(set(self.__detections.keys()))
         
         for frame_num in all_frames:
-            detections_in_frame = self.detections.get(frame_num, [])
+            detections_in_frame = self.__detections.get(frame_num, [])
             
             # Get active tracks in this frame
             active_tracks = []
@@ -457,12 +457,12 @@ class DancerTracker:
                 continue
                 
             # Check for close proximity situations
-            proximity_warning = self._check_proximity(active_tracks)
+            proximity_warning = self.__check_proximity(active_tracks)
             
             # Update role assignments
             if proximity_warning:
                 # Use more careful assignment when poses are close
-                self._assign_roles_proximity(
+                self.__assign_roles_proximity(
                     frame_num,
                     active_tracks,
                     lead_poses,
@@ -472,7 +472,7 @@ class DancerTracker:
                 )
             else:
                 # Use stable tracking when poses are far apart
-                self._assign_roles_stable(
+                self.__assign_roles_stable(
                     frame_num,
                     active_tracks,
                     lead_poses,
@@ -482,7 +482,7 @@ class DancerTracker:
                 )
             
             # Ensure roles are assigned if we have detections
-            self._enforce_role_coverage(
+            self.__enforce_role_coverage(
                 frame_num,
                 active_tracks,
                 lead_poses,
@@ -500,7 +500,7 @@ class DancerTracker:
         return lead_poses, follow_poses
 
     @staticmethod
-    def _enforce_role_coverage(frame_num, active_tracks, lead_poses, follow_poses,
+    def __enforce_role_coverage(frame_num, active_tracks, lead_poses, follow_poses,
                                current_lead, current_follow):
         """Ensure that roles are assigned when poses are available"""
         frame_str = str(frame_num)
@@ -599,7 +599,7 @@ class DancerTracker:
                             break
 
     @staticmethod
-    def _check_proximity(active_tracks):
+    def __check_proximity(active_tracks):
         """Check if any two poses are in close proximity"""
         if len(active_tracks) < 2:
             return False
@@ -629,7 +629,7 @@ class DancerTracker:
         return False
 
     @staticmethod
-    def _assign_roles_stable(frame_num, active_tracks, lead_poses, follow_poses,
+    def __assign_roles_stable(frame_num, active_tracks, lead_poses, follow_poses,
                             current_lead, current_follow):
         """Assign roles with high inertia when tracks are stable"""
         for track_id, detection, analysis in active_tracks:
@@ -652,7 +652,7 @@ class DancerTracker:
                 }
 
     @staticmethod
-    def _assign_roles_proximity(frame_num, active_tracks, lead_poses, follow_poses,
+    def __assign_roles_proximity(frame_num, active_tracks, lead_poses, follow_poses,
                                 current_lead, current_follow):
         """Carefully assign roles when poses are in close proximity"""
         scores = []
@@ -710,7 +710,7 @@ class DancerTracker:
     #region UTILITY
 
     @staticmethod
-    def _calculate_person_size(keypoints):
+    def __calculate_person_size(keypoints):
         """Calculate person size based on limb lengths and torso measurements"""
         # Skip points with low confidence or (0,0) coordinates
         valid_points = [
@@ -762,7 +762,7 @@ class DancerTracker:
         return total_length / point_count if point_count > 0 else 0
 
     @staticmethod
-    def _calculate_relative_size_ratio(keypoints1, keypoints2):
+    def __calculate_relative_size_ratio(keypoints1, keypoints2):
         """Calculate size ratio between two people using only torso and legs"""
         # Key measurements to compare
         measurements = [

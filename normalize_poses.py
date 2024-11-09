@@ -7,20 +7,20 @@ import utils
 
 class PoseNormalizer:
     def __init__(self, video_path:str, output_dir:str):
-        self.video_path = video_path
-        self.output_dir = output_dir
-        self.camera_data = None
-        self.lead_data = None
-        self.follow_data = None
-        self.widest_focal = None
+        self.__video_path = video_path
+        self.__output_dir = output_dir
+        self.__camera_data = None
+        self.__lead_data = None
+        self.__follow_data = None
+        self.__widest_focal = None
         
         # Get video dimensions
         cap = cv2.VideoCapture(video_path)
-        self.frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.__frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.__frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
         
-        self.image_center = (self.frame_width // 2, self.frame_height // 2)
+        self.image_center = (self.__frame_width // 2, self.__frame_height // 2)
 
     @staticmethod
     def find_widest_focal_length(camera_data):
@@ -112,37 +112,37 @@ class PoseNormalizer:
 
     def normalize_frame(self, frame, current_focal):
         """Scale frame based on focal length difference"""
-        if current_focal <= 0 or self.widest_focal <= 0:
+        if current_focal <= 0 or self.__widest_focal <= 0:
             return frame  # Return original frame if we have invalid focal lengths
         
         # Invert the scale factor to cancel out zoom
         # When current_focal is larger than widest_focal (zoomed in), we want to scale down
         # When current_focal is smaller than widest_focal (zoomed out), we want to scale up
-        scale_factor = self.widest_focal / current_focal  # Inverted from previous version
+        scale_factor = self.__widest_focal / current_focal  # Inverted from previous version
         
         # Calculate new dimensions
-        new_width = max(1, int(self.frame_width * scale_factor))
-        new_height = max(1, int(self.frame_height * scale_factor))
+        new_width = max(1, int(self.__frame_width * scale_factor))
+        new_height = max(1, int(self.__frame_height * scale_factor))
         
         # Create black background
-        normalized = np.zeros((self.frame_height, self.frame_width, 3), dtype=np.uint8)
+        normalized = np.zeros((self.__frame_height, self.__frame_width, 3), dtype=np.uint8)
         
         try:
             if scale_factor <= 1.0:
                 # If scaling down, resize frame and center it
                 resized = cv2.resize(frame, (new_width, new_height))
-                y_offset = (self.frame_height - new_height) // 2
-                x_offset = (self.frame_width - new_width) // 2
+                y_offset = (self.__frame_height - new_height) // 2
+                x_offset = (self.__frame_width - new_width) // 2
                 normalized[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = resized
             else:
                 # If scaling up, resize first then crop to center
                 resized = cv2.resize(frame, (new_width, new_height))
                 
                 # Calculate crop coordinates to get the center portion
-                y_start = (new_height - self.frame_height) // 2
-                x_start = (new_width - self.frame_width) // 2
-                y_end = y_start + self.frame_height
-                x_end = x_start + self.frame_width
+                y_start = (new_height - self.__frame_height) // 2
+                x_start = (new_width - self.__frame_width) // 2
+                y_end = y_start + self.__frame_height
+                x_end = x_start + self.__frame_width
                 
                 # Ensure valid crop coordinates
                 y_start = max(0, y_start)
@@ -154,10 +154,10 @@ class PoseNormalizer:
                 normalized = resized[y_start:y_end, x_start:x_end]
                 
                 # If the cropped region is smaller than the target size, pad with black
-                if normalized.shape[0] < self.frame_height or normalized.shape[1] < self.frame_width:
-                    temp = np.zeros((self.frame_height, self.frame_width, 3), dtype=np.uint8)
-                    y_pad = (self.frame_height - normalized.shape[0]) // 2
-                    x_pad = (self.frame_width - normalized.shape[1]) // 2
+                if normalized.shape[0] < self.__frame_height or normalized.shape[1] < self.__frame_width:
+                    temp = np.zeros((self.__frame_height, self.__frame_width, 3), dtype=np.uint8)
+                    y_pad = (self.__frame_height - normalized.shape[0]) // 2
+                    x_pad = (self.__frame_width - normalized.shape[1]) // 2
                     temp[y_pad:y_pad+normalized.shape[0], x_pad:x_pad+normalized.shape[1]] = normalized
                     normalized = temp
                 
@@ -167,13 +167,13 @@ class PoseNormalizer:
             return frame  # Return original frame if any error occurs
 
     def process_video(self, output_path):
-        cap = cv2.VideoCapture(self.video_path)
+        cap = cv2.VideoCapture(self.__video_path)
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps, 
-                            (self.frame_width, self.frame_height))
+                            (self.__frame_width, self.__frame_height))
 
         with tqdm(total=total_frames, desc="Normalizing video") as pbar:
             frame_idx = 0
@@ -183,7 +183,7 @@ class PoseNormalizer:
                     break
 
                 # Get focal length for current frame
-                current_focal = self.camera_data.get(str(frame_idx), {}).get('focal_length')
+                current_focal = self.__camera_data.get(str(frame_idx), {}).get('focal_length')
                 if current_focal is None:
                     break
 
@@ -200,14 +200,14 @@ class PoseNormalizer:
     def normalize_vo_data(self):
         """Normalize visual odometry data and combine with initial pose"""
         # Load initial camera pose
-        initial_pose = utils.load_json(os.path.join(self.output_dir, 'initial_camera_pose.json'))
+        initial_pose = utils.load_json(os.path.join(self.__output_dir, 'initial_camera_pose.json'))
         initial_position = initial_pose['position']
         
         normalized_vo = []
         
         # Iterate through all frames in camera data
-        for frame_idx in sorted(self.camera_data.keys(), key=int):
-            frame_data = self.camera_data[frame_idx]
+        for frame_idx in sorted(self.__camera_data.keys(), key=int):
+            frame_data = self.__camera_data[frame_idx]
             
             # Get rotation quaternion from frame data
             rotation = frame_data['rotation']
@@ -226,34 +226,34 @@ class PoseNormalizer:
             normalized_vo.append(vo_entry)
         
         # Save normalized visual odometry data
-        vo_normalized_path = os.path.join(self.output_dir, 'vo_normalized.json')
+        vo_normalized_path = os.path.join(self.__output_dir, 'vo_normalized.json')
         utils.save_json(normalized_vo, vo_normalized_path)
         print(f"4. Normalized visual odometry data: {vo_normalized_path}")
 
     def run(self):
-        os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self.__output_dir, exist_ok=True)
 
         # Load data
-        self.camera_data = utils.load_json(os.path.join(self.output_dir, 'camera_tracking.json'))
-        self.lead_data = utils.load_json(os.path.join(self.output_dir, 'lead.json'))
-        self.follow_data = utils.load_json(os.path.join(self.output_dir, 'follow.json'))
+        self.__camera_data = utils.load_json(os.path.join(self.__output_dir, 'camera_tracking.json'))
+        self.__lead_data = utils.load_json(os.path.join(self.__output_dir, 'lead.json'))
+        self.__follow_data = utils.load_json(os.path.join(self.__output_dir, 'follow.json'))
         
         # Find widest focal length
-        self.widest_focal = self.find_widest_focal_length(self.camera_data)
-        print(f"Widest focal length found: {self.widest_focal}")
+        self.__widest_focal = self.find_widest_focal_length(self.__camera_data)
+        print(f"Widest focal length found: {self.__widest_focal}")
         
         # Normalize pose data
-        lead_normalized = self.normalize_pose_data(self.lead_data, self.camera_data, self.widest_focal)
-        follow_normalized = self.normalize_pose_data(self.follow_data, self.camera_data, self.widest_focal)
+        lead_normalized = self.normalize_pose_data(self.__lead_data, self.__camera_data, self.__widest_focal)
+        follow_normalized = self.normalize_pose_data(self.__follow_data, self.__camera_data, self.__widest_focal)
 
         self.normalize_vo_data()
         
         # Save normalized pose data
-        lead_normalized_path = os.path.join(self.output_dir, 'lead-normalized.json')
-        follow_normalized_path = os.path.join(self.output_dir, 'follow-normalized.json')
+        lead_normalized_path = os.path.join(self.__output_dir, 'lead-normalized.json')
+        follow_normalized_path = os.path.join(self.__output_dir, 'follow-normalized.json')
         utils.save_json(lead_normalized, lead_normalized_path)
         utils.save_json(follow_normalized, follow_normalized_path)
         
         # Process video
-        normalized_video_path = os.path.join(self.output_dir, 'normalized_video.mp4')
+        normalized_video_path = os.path.join(self.__output_dir, 'normalized_video.mp4')
         self.process_video(normalized_video_path)

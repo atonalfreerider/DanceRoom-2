@@ -6,19 +6,19 @@ from scipy.spatial.transform import Rotation
 class VirtualRoom:
     def __init__(self, room_dimensions):
         # Room dimensions in meters
-        self.room_width = room_dimensions[0]
-        self.room_depth = room_dimensions[2]
-        self.room_height = room_dimensions[1]
-        self.grid_size = 1.0  # 1m^2 grid tiles
-        self.frame_width, self.frame_height = None, None
+        self.__room_width = room_dimensions[0]
+        self.__room_depth = room_dimensions[2]
+        self.__room_height = room_dimensions[1]
+        self.__grid_size = 1.0  # 1m^2 grid tiles
+        self.__frame_width, self.__frame_height = None, None
 
     def set_frame(self, frame_height, frame_width):
-        self.frame_width = frame_width
-        self.frame_height = frame_height
+        self.__frame_width = frame_width
+        self.__frame_height = frame_height
 
     def project_point_to_planes(self, world_ray, camera_position):
         # Test intersections
-        hw, hd = self.room_width / 2, self.room_depth / 2
+        hw, hd = self.__room_width / 2, self.__room_depth / 2
         intersections = []
 
         # Test floor (y = 0)
@@ -34,7 +34,7 @@ class VirtualRoom:
             t = (-hd - camera_position[2]) / world_ray[2]
             if t > 0:
                 point = camera_position + t * world_ray
-                if abs(point[0]) <= hw and 0 <= point[1] <= self.room_height:
+                if abs(point[0]) <= hw and 0 <= point[1] <= self.__room_height:
                     intersections.append(('back_wall', point, t))
 
         # Test left wall (x = -hw)
@@ -42,7 +42,7 @@ class VirtualRoom:
             t = (-hw - camera_position[0]) / world_ray[0]
             if t > 0:
                 point = camera_position + t * world_ray
-                if abs(point[2]) <= hd and 0 <= point[1] <= self.room_height:
+                if abs(point[2]) <= hd and 0 <= point[1] <= self.__room_height:
                     intersections.append(('left_wall', point, t))
 
         # Test right wall (x = hw)
@@ -50,7 +50,7 @@ class VirtualRoom:
             t = (hw - camera_position[0]) / world_ray[0]
             if t > 0:
                 point = camera_position + t * world_ray
-                if abs(point[2]) <= hd and 0 <= point[1] <= self.room_height:
+                if abs(point[2]) <= hd and 0 <= point[1] <= self.__room_height:
                     intersections.append(('right_wall', point, t))
 
         # Return closest intersection point and its type
@@ -61,8 +61,8 @@ class VirtualRoom:
         return None
 
     def project_points(self, vertices, rotation, position, focal_length):
-        fx = fy = min(self.frame_height, self.frame_width)
-        cx, cy = self.frame_width / 2, self.frame_height / 2
+        fx = fy = min(self.__frame_height, self.__frame_width)
+        cx, cy = self.__frame_width / 2, self.__frame_height / 2
 
         # Project vertices to image plane
         image_points = []
@@ -93,12 +93,12 @@ class VirtualRoom:
     def draw_virtual_room(self, frame, position, rotation, focal_length):
         """Draw the virtual room borders and floor origin"""
         # Get camera parameters
-        fx = fy = min(self.frame_height, self.frame_width)
-        cx, cy = self.frame_width / 2, self.frame_height / 2
+        fx = fy = min(self.__frame_height, self.__frame_width)
+        cx, cy = self.__frame_width / 2, self.__frame_height / 2
 
         # Generate room vertices with origin at floor center
-        hw, hd = self.room_width / 2, self.room_depth / 2
-        h = self.room_height  # Full height, since y=0 is now at floor level
+        hw, hd = self.__room_width / 2, self.__room_depth / 2
+        h = self.__room_height  # Full height, since y=0 is now at floor level
         vertices = np.array([
             [-hw, 0, hd], [hw, 0, hd],  # Floor front (closer to camera)
             [-hw, 0, -hd], [hw, 0, -hd],  # Floor back (near back wall)
@@ -115,8 +115,8 @@ class VirtualRoom:
         def is_point_in_frame(point):
             if point is None:
                 return False
-            return (0 <= point[0] < self.frame_width and
-                    0 <= point[1] < self.frame_height)
+            return (0 <= point[0] < self.__frame_width and
+                    0 <= point[1] < self.__frame_height)
 
         def clip_line(p1, p2, i1, i2):
             """Clip line to frame boundaries and check visibility"""
@@ -127,9 +127,9 @@ class VirtualRoom:
             # If both points are outside frame in same direction, don't draw
             if p1 is not None and p2 is not None:
                 if ((p1[0] < 0 and p2[0] < 0) or
-                        (p1[0] >= self.frame_width and p2[0] >= self.frame_width) or
+                        (p1[0] >= self.__frame_width and p2[0] >= self.__frame_width) or
                         (p1[1] < 0 and p2[1] < 0) or
-                        (p1[1] >= self.frame_height and p2[1] >= self.frame_height)):
+                        (p1[1] >= self.__frame_height and p2[1] >= self.__frame_height)):
                     return False
 
                 # If at least one point is in frame, draw the line
@@ -163,14 +163,14 @@ class VirtualRoom:
         # Draw floor grid crosses
         cross_size = 0.2  # 0.2 meters leg length
         # Create evenly spaced grid points in world coordinates
-        x_count = int(self.room_width / self.grid_size) - 1
-        z_count = int(self.room_depth / self.grid_size) - 1
+        x_count = int(self.__room_width / self.__grid_size) - 1
+        z_count = int(self.__room_depth / self.__grid_size) - 1
 
         # Create grid starting from back to front, left to right
         for i in range(z_count):
-            z = -hd + self.grid_size + i * self.grid_size  # Start from back wall
+            z = -hd + self.__grid_size + i * self.__grid_size  # Start from back wall
             for j in range(x_count):
-                x = hw - self.grid_size - j * self.grid_size  # Start from right wall (flipped x)
+                x = hw - self.__grid_size - j * self.__grid_size  # Start from right wall (flipped x)
 
                 # Define cross points in world coordinates (y=0 for floor)
                 cross_center = np.array([x, 0, z])
@@ -201,7 +201,7 @@ class VirtualRoom:
                     pixel_y = int(y_proj * fx * focal_length + cy)
 
                     # Check if point is in frame
-                    if not (0 <= pixel_x < self.frame_width and 0 <= pixel_y < self.frame_height):
+                    if not (0 <= pixel_x < self.__frame_width and 0 <= pixel_y < self.__frame_height):
                         all_visible = False
                         break
 
@@ -280,7 +280,7 @@ class VirtualRoom:
         print(f"Ray direction (world space): {world_ray}")
 
         # Test intersections
-        hw, hd = self.room_width / 2, self.room_depth / 2
+        hw, hd = self.__room_width / 2, self.__room_depth / 2
 
         # Test floor (y = 0)
         if abs(world_ray[1]) > 1e-6:
@@ -295,7 +295,7 @@ class VirtualRoom:
             t = (-hd - position[2]) / world_ray[2]
             if t > 0:
                 point = position + t * world_ray
-                if abs(point[0]) <= hw and 0 <= point[1] <= self.room_height:
+                if abs(point[0]) <= hw and 0 <= point[1] <= self.__room_height:
                     print(f"Back wall intersection at: {point}")
 
         # Test left wall (x = hw)  # Flipped from -hw to hw
@@ -303,7 +303,7 @@ class VirtualRoom:
             t = (hw - position[0]) / world_ray[0]
             if t > 0:
                 point = position + t * world_ray
-                if abs(point[2]) <= hd and 0 <= point[1] <= self.room_height:
+                if abs(point[2]) <= hd and 0 <= point[1] <= self.__room_height:
                     print(f"Left wall intersection at: {point}")
 
         # Test right wall (x = -hw)  # Flipped from hw to -hw
@@ -311,5 +311,5 @@ class VirtualRoom:
             t = (-hw - position[0]) / world_ray[0]
             if t > 0:
                 point = position + t * world_ray
-                if abs(point[2]) <= hd and 0 <= point[1] <= self.room_height:
+                if abs(point[2]) <= hd and 0 <= point[1] <= self.__room_height:
                     print(f"Right wall intersection at: {point}")

@@ -1,8 +1,8 @@
 import os
 import argparse
-import yolo_pose
+from yolo_pose import YOLOPose
 from dancer_tracker import DancerTracker
-import dance_room_tracker
+from dance_room_tracker import DanceRoomTracker
 from normalize_poses import PoseNormalizer
 from temporal_smoothing import TemporalSmoothing
 #from debug_video import DebugVideo
@@ -13,18 +13,18 @@ def main(video_path:str, output_dir:str, room_dimension:str):
     # DANCER TRACKING
 
     # use YOLOv11-pose to detect poses of figures and track them with IoU. Output detections.json for later use
-    yoloPose = yolo_pose.YOLOPose(video_path, output_dir)
+    yoloPose = YOLOPose(video_path, output_dir)
     yoloPose.detect_poses()
 
     # use DeepFace (VGG-Face) to track dancers by face id
-    dancer_tracker = DancerTracker(video_path, output_dir)
-    dancer_tracker.process_video()
+    dancerTracker = DancerTracker(video_path, output_dir)
+    dancerTracker.process_video()
 
     #TODO user input to correct dancer tracks
 
     # ROOM TRACKING
     parsed_room_dimension = parse_dimensions(room_dimension)
-    danceRoomTracker = dance_room_tracker.DanceRoomTracker(video_path, output_dir, parsed_room_dimension)
+    danceRoomTracker = DanceRoomTracker(video_path, output_dir, parsed_room_dimension)
     danceRoomTracker.run_video_loop()
 
     return
