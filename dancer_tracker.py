@@ -51,6 +51,10 @@ class DancerTracker:
             return
 
         self.__create_role_assignments()
+        
+        # Add post-processing step to fill gaps
+        self.__fill_role_assignment_gaps()
+        
         print("Lead and follow tracked using DeepFace approach")
 
     def __analyze_video_faces(self):
@@ -814,4 +818,62 @@ class DancerTracker:
         return None
 
     #endregion
+
+    def __fill_role_assignment_gaps(self):
+        """Fill in gaps between same-role assignments for the same track ID"""
+        print("Filling gaps in role assignments...")
+        
+        # Process lead and follow gaps separately
+        for role, poses_file in [('lead', self.__lead_file), ('follow', self.__follow_file)]:
+            poses = utils.load_json_integer_keys(poses_file)
+            if not poses:
+                continue
+            
+            # Get all track IDs that appear in the poses
+            track_ids = set()
+            for frame_data in poses.values():
+                track_ids.add(frame_data['id'])
+
+            # Process each track ID
+            filled_count = 0
+            for track_id in track_ids:
+                # Get all frames where this track ID appears, sorted
+                track_frames = sorted([
+                    int(frame) 
+                    for frame, data in poses.items() 
+                    if data['id'] == track_id
+                ])
+                
+                if len(track_frames) < 2:
+                    continue
+                
+                # Look for gaps
+                for i in range(len(track_frames) - 1):
+                    start_frame = track_frames[i]
+                    end_frame = track_frames[i + 1]
+                    
+                    # If there's a gap
+                    if end_frame - start_frame > 1:
+                        # Check each frame in the gap
+                        for gap_frame in range(start_frame + 1, end_frame):
+                            # Verify track exists in detections
+                            detections = self.__detections.get(gap_frame, [])
+                            detection = next(
+                                (d for d in detections if d['id'] == track_id),
+                                None
+                            )
+                            
+                            if detection:
+                                # Fill the gap
+                                poses[str(gap_frame)] = {
+                                    'id': detection['id'],
+                                    'bbox': detection['bbox'],
+                                    'confidence': detection['confidence'],
+                                    'keypoints': detection['keypoints'],
+                                    'gap_filled': True
+                                }
+                                filled_count += 1
+            
+            # Save updated poses
+            utils.save_numpy_json(poses, poses_file)
 
