@@ -1,23 +1,23 @@
 import os
 import cv2
-import json
 import numpy as np
 from tqdm import tqdm
+import utils
 
 
 class DebugVideo:
     def __init__(self, input_path, output_dir):
-        self.input_path = input_path
-        self.output_dir = output_dir
-        self.lead_file = os.path.join(output_dir, 'lead-normalized.json')
-        self.follow_file = os.path.join(output_dir, 'follow-normalized.json')
-        self.lead = self.load_json(self.lead_file)
-        self.follow = self.load_json(self.follow_file)
+        self.__input_path = input_path
+        self.__output_dir = output_dir
+        self.__lead_file = os.path.join(output_dir, 'lead-normalized.json')
+        self.__follow_file = os.path.join(output_dir, 'follow-normalized.json')
+        self.__lead = utils.load_json(self.__lead_file)
+        self.__follow = utils.load_json(self.__follow_file)
 
 
     def generate_debug_video(self):
-        debug_video_path = os.path.join(self.output_dir, 'debug_video.mp4')
-        cap = cv2.VideoCapture(self.input_path)
+        debug_video_path = os.path.join(self.__output_dir, 'debug_video.mp4')
+        cap = cv2.VideoCapture(self.__input_path)
 
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -28,8 +28,8 @@ class DebugVideo:
         out = cv2.VideoWriter(debug_video_path, fourcc, fps, (frame_width, frame_height))
 
         # Load tracked sequences
-        lead_track = self.load_json(self.lead_file)
-        follow_track = self.load_json(self.follow_file)
+        lead_track = utils.load_json(self.__lead_file)
+        follow_track = utils.load_json(self.__follow_file)
 
         # Use tqdm to track progress
         with tqdm(total=total_frames, desc="Generating debug video") as pbar:
@@ -42,14 +42,14 @@ class DebugVideo:
                 lead_pose = lead_track.get(str(frame_count))
                 if lead_pose:
                     lead_keypoints = lead_pose['keypoints']
-                    self.draw_pose(frame, lead_keypoints, (0, 0, 255), is_lead_or_follow=True)  # Red for lead
+                    self.__draw_pose(frame, lead_keypoints, (0, 0, 255), is_lead_or_follow=True)  # Red for lead
                     cv2.putText(frame, "LEAD", (int(lead_keypoints[0][0]), int(lead_keypoints[0][1]) - 20),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
                 follow_pose = follow_track.get(str(frame_count))
                 if follow_pose:
                     follow_keypoints = follow_pose['keypoints']
-                    self.draw_pose(frame, follow_keypoints, (255, 192, 203), is_lead_or_follow=True)  # Pink for follow
+                    self.__draw_pose(frame, follow_keypoints, (255, 192, 203), is_lead_or_follow=True)  # Pink for follow
                     cv2.putText(frame, "FOLLOW", (int(follow_keypoints[0][0]), int(follow_keypoints[0][1]) - 20),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 192, 203), 2)
 
@@ -62,7 +62,7 @@ class DebugVideo:
         out.release()
 
     @staticmethod
-    def draw_pose(image, keypoints, color, is_lead_or_follow=False):
+    def __draw_pose(image, keypoints, color, is_lead_or_follow=False):
         connections = [
             (0, 1), (0, 2), (1, 3), (2, 4),  # Head
             (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),  # Arms
@@ -97,10 +97,3 @@ class DebugVideo:
                 cv2.circle(overlay, pt, 3, color_with_alpha, -1)
 
         cv2.add(image, overlay, image)
-
-    @staticmethod
-    def load_json(file_path):
-        if os.path.exists(file_path):
-            with open(file_path, 'r') as f:
-                return json.load(f)
-        return {}
