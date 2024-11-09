@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import json
 import os
 import tqdm
 from deepface import DeepFace
@@ -36,8 +35,7 @@ class DancerTracker:
         # Check if we have cached analysis
         if os.path.exists(self.__analysis_cache_file):
             print("Loading cached face analysis results...")
-            with open(self.__analysis_cache_file, 'r') as f:
-                self.__face_analysis = json.load(f)
+            self.__face_analysis = utils.load_json(self.__analysis_cache_file)
             
             # Print statistics from cache
             male_count = sum(1 for data in self.__face_analysis.values()
@@ -599,36 +597,6 @@ class DancerTracker:
                             break
 
     @staticmethod
-    def __check_proximity(active_tracks):
-        """Check if any two poses are in close proximity"""
-        if len(active_tracks) < 2:
-            return False
-            
-        for i in range(len(active_tracks)):
-            for j in range(i + 1, len(active_tracks)):
-                _, det1, _ = active_tracks[i]
-                _, det2, _ = active_tracks[j]
-                
-                # Calculate center points
-                center1 = ((det1['bbox'][0] + det1['bbox'][2])/2,
-                          (det1['bbox'][1] + det1['bbox'][3])/2)
-                center2 = ((det2['bbox'][0] + det2['bbox'][2])/2,
-                          (det2['bbox'][1] + det2['bbox'][3])/2)
-                
-                # Calculate distance
-                distance = ((center1[0] - center2[0])**2 +
-                           (center1[1] - center2[1])**2)**0.5
-                
-                # Check if distance is less than average person width
-                avg_width = (det1['bbox'][2] - det1['bbox'][0] +
-                            det2['bbox'][2] - det2['bbox'][0]) / 2
-                
-                if distance < avg_width * 1.5:  # Proximity threshold
-                    return True
-        
-        return False
-
-    @staticmethod
     def __assign_roles_stable(frame_num, active_tracks, lead_poses, follow_poses,
                             current_lead, current_follow):
         """Assign roles with high inertia when tracks are stable"""
@@ -708,6 +676,36 @@ class DancerTracker:
             }
 
     #region UTILITY
+
+    @staticmethod
+    def __check_proximity(active_tracks):
+        """Check if any two poses are in close proximity"""
+        if len(active_tracks) < 2:
+            return False
+
+        for i in range(len(active_tracks)):
+            for j in range(i + 1, len(active_tracks)):
+                _, det1, _ = active_tracks[i]
+                _, det2, _ = active_tracks[j]
+
+                # Calculate center points
+                center1 = ((det1['bbox'][0] + det1['bbox'][2]) / 2,
+                           (det1['bbox'][1] + det1['bbox'][3]) / 2)
+                center2 = ((det2['bbox'][0] + det2['bbox'][2]) / 2,
+                           (det2['bbox'][1] + det2['bbox'][3]) / 2)
+
+                # Calculate distance
+                distance = ((center1[0] - center2[0]) ** 2 +
+                            (center1[1] - center2[1]) ** 2) ** 0.5
+
+                # Check if distance is less than average person width
+                avg_width = (det1['bbox'][2] - det1['bbox'][0] +
+                             det2['bbox'][2] - det2['bbox'][0]) / 2
+
+                if distance < avg_width * 1.5:  # Proximity threshold
+                    return True
+
+        return False
 
     @staticmethod
     def __calculate_person_size(keypoints):
