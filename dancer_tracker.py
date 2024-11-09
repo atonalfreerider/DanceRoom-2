@@ -11,7 +11,7 @@ import utils
 
 # uses DeepFace to find self-similar faces and gender
 class DancerTracker:
-    def __init__(self, input_path, output_dir):
+    def __init__(self, input_path:str, output_dir:str):
         self.input_path = input_path
         self.output_dir = output_dir
 
@@ -47,7 +47,11 @@ class DancerTracker:
             print(f"Loaded {male_count} male and {female_count} female cached analyses")
         else:
             self.analyze_video_faces()
-        
+
+        if os.path.exists(self.lead_file) and os.path.exists(self.follow_file):
+            print("lead and follow already exist. skipping")
+            return
+
         self.create_role_assignments()
         print("Lead and follow tracked using DeepFace approach")
 

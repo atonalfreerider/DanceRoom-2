@@ -4,12 +4,11 @@ from scipy.spatial.transform import Rotation
 
 
 class VirtualRoom:
-    def __init__(self):
+    def __init__(self, room_dimensions):
         # Room dimensions in meters
-        # Elevation Crown Plaza Denver Ballroom
-        self.room_width = 18.29
-        self.room_depth = 11.0
-        self.room_height = 4.57
+        self.room_width = room_dimensions[0]
+        self.room_depth = room_dimensions[2]
+        self.room_height = room_dimensions[1]
         self.grid_size = 1.0  # 1m^2 grid tiles
         self.frame_width, self.frame_height = None, None
 

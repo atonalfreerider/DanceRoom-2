@@ -9,13 +9,14 @@ from virtual_room import VirtualRoom
 
 
 class DanceRoomTracker:
-    def __init__(self, video_path, output_dir):
+    def __init__(self, video_path:str, output_dir:str, room_dimension):
         self.video_path = video_path
         self.output_dir = output_dir
         self.initial_camera_pose_json_path = os.path.join(output_dir, 'initial_camera_pose.json')
         self.camera_tracking_json_path = os.path.join(output_dir, 'camera_tracking.json')
         
         # Load initial camera pose (position and initial orientation/focal)
+        self.user_has_set_cam_pos = False
         self.initial_camera_pose = self.load_initial_camera_pose()
         
         # Per-frame camera tracking data
@@ -29,7 +30,7 @@ class DanceRoomTracker:
             self.frame_rotations[frame_idx] = np.array(data['rotation'])
             self.frame_focal_lengths[frame_idx] = data['focal_length']
 
-        self.virtualRoom = VirtualRoom()
+        self.virtualRoom = VirtualRoom(room_dimension)
         
         # Tracking state
         self.current_frame_idx = 0
@@ -42,11 +43,11 @@ class DanceRoomTracker:
         # Add tracking for keypoints
         self.rotation_keypoints = {}  # frame_idx -> rotation quaternion
         self.focal_keypoints = {}     # frame_idx -> focal length
-        
-        # Always store frame 0 as first keypoint
+
+        # store cam initial keypoint
         if self.initial_camera_pose:
-            self.rotation_keypoints[0] = self.initial_camera_pose['rotation'].copy()
-            self.focal_keypoints[0] = self.initial_camera_pose['focal_length']
+            self.rotation_keypoints[self.initial_camera_pose['frame_num']] = self.initial_camera_pose['rotation'].copy()
+            self.focal_keypoints[self.initial_camera_pose['frame_num']] = self.initial_camera_pose['focal_length']
 
         self.frame_height, self.frame_width = None, None
         self.current_frame = None
@@ -254,15 +255,18 @@ class DanceRoomTracker:
 
         # Create window and set mouse callback
         cv2.namedWindow('Dance Room Tracker')
-        self.process_vo_data()
-        if len(self.frame_rotations) == 0:
-            # first time. set rotations from processed vo data
+
+        def initialize_vo():
+            self.process_vo_data()
             self.set_rotations_from_processed_vo()
 
-        # Automatically create a keyframe at the last frame
-        last_frame = len(self.vo_data) - 1
-        self.rotation_keypoints[last_frame] = self.frame_rotations[last_frame].copy()
-        self.focal_keypoints[last_frame] = self.frame_focal_lengths[last_frame]
+            # Automatically create a keyframe at the last frame
+            last_frame = len(self.vo_data) - 1
+            self.rotation_keypoints[last_frame] = self.frame_rotations[last_frame].copy()
+            self.focal_keypoints[last_frame] = self.frame_focal_lengths[last_frame]
+
+        if self.user_has_set_cam_pos and len(self.frame_rotations) == 0:
+            initialize_vo()
 
         self.update_display(True)
         
@@ -271,17 +275,16 @@ class DanceRoomTracker:
         while True:
             key = cv2.waitKey(1) & 0xFF
 
-            if key == ord('s'):
-                self.save_camera_tracking()
-                print("Saved tracking data")
-
-            elif key == ord(' '):  # Toggle play/pause
+            if key == ord(' '):  # Toggle play/pause
                 playing = not playing
                 print(f"Playback: {'Playing' if playing else 'Paused'}")
                 self.camera_has_moved = False  # Reset movement flag when playing/pausing
             
             elif key == 13:  # Enter key - create new keyframe
-                if self.current_frame_idx > 0 and self.camera_has_moved:  # Only if camera has moved
+                if not self.user_has_set_cam_pos:
+                    self.save_initial_camera_pose()
+                    initialize_vo()
+                elif self.current_frame_idx > 0 and self.camera_has_moved:  # Only if camera has moved
                     self.warp()
                     
                     print(f"Created keyframe and warped surrounding frames")
@@ -322,18 +325,24 @@ class DanceRoomTracker:
         cap.release()
         cv2.destroyAllWindows()
 
-    # region DRAW
-
     def update_display(self, paused):
         """Update display with current frame and overlays"""
         display_frame = self.current_frame.copy()
+
+        rot = Rotation.from_quat(self.initial_camera_pose['rotation'])
+        if not len(self.frame_rotations) == 0:
+            rot = Rotation.from_quat(self.frame_rotations[self.current_frame_idx])
+
+        focal = self.initial_camera_pose['focal_length']
+        if not len(self.frame_focal_lengths) == 0:
+            focal = self.frame_focal_lengths[self.current_frame_idx]
 
         # Draw virtual room with current frame's rotation and focal length
         display_frame = self.virtualRoom.draw_virtual_room(
             display_frame,
             self.initial_camera_pose['position'],
-            Rotation.from_quat(self.frame_rotations[self.current_frame_idx]),
-            self.frame_focal_lengths[self.current_frame_idx]
+            rot,
+            focal
         )
 
         # Add UI text
@@ -359,13 +368,11 @@ class DanceRoomTracker:
 
         cv2.imshow('Dance Room Tracker', display_frame)
 
-    # endregion
-
     # region CAMERA
 
     def handle_camera_movement(self, key):
         """Handle keyboard input for camera movement"""
-        if self.current_frame_idx == 0:
+        if not self.user_has_set_cam_pos:
             # Allow full camera control at frame 0
             return self._handle_full_camera_movement(key)
         else:
@@ -388,44 +395,43 @@ class DanceRoomTracker:
                 'z') or key == ord('x') or key == ord('o') or key == ord('p'):
             update = True
             current_position = self.initial_camera_pose['position']
-            current_rotation = self.initial_camera_pose['rotation']
+            current_rotation = Rotation.from_quat(self.initial_camera_pose['rotation'])
             current_focal_length = self.initial_camera_pose['focal_length']
 
         if key == ord('w'):
             self.initial_camera_pose['position'][2] = current_position[2] + pos_delta
+        elif key == ord('s'):
+            self.initial_camera_pose['position'][2] = current_position[2] - pos_delta
+        elif key == ord('a'):
+            self.initial_camera_pose['position'][0] = current_position[0] - pos_delta
+        elif key == ord('d'):
+            self.initial_camera_pose['position'][0] = current_position[0] + pos_delta
+        elif key == ord('q'):
+            self.initial_camera_pose['position'][1] = current_position[1] - pos_delta
+        elif key == ord('e'):
+            self.initial_camera_pose['position'][1] = current_position[1] + pos_delta
         elif key == ord('z'):  # Increase focal length
-            self.frame_focal_lengths[self.current_frame_idx] = current_focal_length + focal_delta
-            self.initial_camera_pose['focal_length'] = self.frame_focal_lengths[self.current_frame_idx]
+            self.initial_camera_pose['focal_length'] = current_focal_length + focal_delta
         elif key == ord('x'):  # Decrease focal length
-            self.frame_focal_lengths[self.current_frame_idx] = max(0.1, current_focal_length - focal_delta)
-            self.initial_camera_pose['focal_length'] = self.frame_focal_lengths[self.current_frame_idx]
+            self.initial_camera_pose['focal_length'] = max(0.1, current_focal_length - focal_delta)
         elif key == ord('i'):  # Up arrow (tilt up)
             rot = Rotation.from_euler('x', -rot_delta)
-            self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
+            self.initial_camera_pose['rotation'] = (rot * current_rotation).as_quat()
         elif key == ord('k'):  # Down arrow (tilt down)
             rot = Rotation.from_euler('x', rot_delta)
-            self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
+            self.initial_camera_pose['rotation'] = (rot * current_rotation).as_quat()
         elif key == ord('j'):  # Left arrow (pan left)
             rot = Rotation.from_euler('y', -rot_delta)
-            self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
+            self.initial_camera_pose['rotation'] = (rot * current_rotation).as_quat()
         elif key == ord('l'):  # Right arrow (pan right)
             rot = Rotation.from_euler('y', rot_delta)
-            self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
+            self.initial_camera_pose['rotation'] = (rot * current_rotation).as_quat()
         elif key == ord('o'):  # Roll counter-clockwise
             rot = Rotation.from_euler('z', -rot_delta)
-            self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
+            self.initial_camera_pose['rotation'] = (rot * current_rotation).as_quat()
         elif key == ord('p'):  # Roll clockwise
             rot = Rotation.from_euler('z', rot_delta)
-            self.frame_rotations[self.current_frame_idx] = (rot * current_rotation).as_quat()
-            self.initial_camera_pose['rotation'] = self.frame_rotations[self.current_frame_idx]
-
-        if update:
-            self.save_initial_camera_pose()
+            self.initial_camera_pose['rotation'] = (rot * current_rotation).as_quat()
 
         return update
 
@@ -480,7 +486,9 @@ class DanceRoomTracker:
         """Load initial camera pose from JSON if it exists"""
         data = utils.load_json(self.initial_camera_pose_json_path)
         if data:
+            self.user_has_set_cam_pos = True
             return {
+                'frame_num': int(data['frame_num']),
                 'position': np.array(data['position']),
                 'rotation': np.array(data['rotation']),
                 'focal_length': data['focal_length']
@@ -489,6 +497,7 @@ class DanceRoomTracker:
             # Default camera pose: at +Z looking towards -Z (back wall)
             # Camera height is now positive since y=0 is at floor level
             return {
+                'frame_num': 0,
                 'position': np.array([0.0, 1.1, 3.4]),  # Position with positive Y for height above floor
                 'rotation': np.array([0.0, 1.0, 0.0, 0.0]),  # Looking towards -Z
                 'focal_length': 1.400
@@ -497,11 +506,13 @@ class DanceRoomTracker:
     def save_initial_camera_pose(self):
         """Save camera poses to JSON"""
         data = {
+            'frame_num': self.current_frame_idx,
             'position': self.initial_camera_pose['position'].tolist(),
             'rotation': self.initial_camera_pose['rotation'].tolist(),
             'focal_length': self.initial_camera_pose['focal_length']
         }
         utils.save_json(data, self.initial_camera_pose_json_path)
+        self.user_has_set_cam_pos = True
         print(f'saved to {self.initial_camera_pose_json_path}')
 
     def save_camera_tracking(self):

@@ -2,12 +2,11 @@ import numpy as np
 import cv2
 from tqdm import tqdm
 import os
-from debug_video import DebugVideo
 import utils
 
 
 class PoseNormalizer:
-    def __init__(self, video_path, output_dir):
+    def __init__(self, video_path:str, output_dir:str):
         self.video_path = video_path
         self.output_dir = output_dir
         self.camera_data = None

@@ -4,7 +4,7 @@ from pose_data_utils import PoseDataUtils
 import utils
 
 class TemporalSmoothing:
-    def __init__(self, output_dir):
+    def __init__(self, output_dir:str):
         self.output_dir = Path(output_dir)
         self.lead_file = os.path.join(output_dir, 'lead-normalized.json')
         self.follow_file = os.path.join(output_dir, 'follow-normalized.json')
@@ -57,8 +57,8 @@ class TemporalSmoothing:
         return interpolated_data
 
     def run(self):
-        lead_data = utils.load_poses_integer_keys(self.lead_file)
-        follow_data = utils.load_poses_integer_keys(self.follow_file)
+        lead_data = utils.load_json_integer_keys(self.lead_file)
+        follow_data = utils.load_json_integer_keys(self.follow_file)
 
         interpolated_lead = self.interpolate_missing_poses(lead_data)
         interpolated_follow = self.interpolate_missing_poses(follow_data)
