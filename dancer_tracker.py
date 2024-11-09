@@ -823,9 +823,12 @@ class DancerTracker:
         """Fill in gaps between same-role assignments for the same track ID"""
         print("Filling gaps in role assignments...")
         
-        # Process lead and follow gaps separately
-        for role, poses_file in [('lead', self.__lead_file), ('follow', self.__follow_file)]:
-            poses = utils.load_json_integer_keys(poses_file)
+        # Load poses once at the start
+        lead_poses = utils.load_json_integer_keys(self.__lead_file)
+        follow_poses = utils.load_json_integer_keys(self.__follow_file)
+        
+        # First pass: Fill gaps using track IDs
+        for role, poses in [('lead', lead_poses), ('follow', follow_poses)]:
             if not poses:
                 continue
             
@@ -833,7 +836,7 @@ class DancerTracker:
             track_ids = set()
             for frame_data in poses.values():
                 track_ids.add(frame_data['id'])
-
+            
             # Process each track ID
             filled_count = 0
             for track_id in track_ids:
@@ -873,7 +876,128 @@ class DancerTracker:
                                     'gap_filled': True
                                 }
                                 filled_count += 1
+
+        # Save after first pass
+        utils.save_numpy_json(lead_poses, self.__lead_file)
+        utils.save_numpy_json(follow_poses, self.__follow_file)
+        
+        print("\nStarting interpolation pass...")
+        
+        # Second pass: Fill remaining gaps using interpolation
+        for role, poses in [('lead', lead_poses), ('follow', follow_poses)]:
+            filled_count = 0
             
-            # Save updated poses
-            utils.save_numpy_json(poses, poses_file)
+            # Get valid frames (those with bbox data)
+            valid_frames = []
+            for frame_str, data in poses.items():
+                if 'bbox' in data and data['bbox']:
+                    valid_frames.append(int(frame_str))
+            valid_frames.sort()
+            
+            if len(valid_frames) < 2:
+                print(f"Not enough valid frames for {role} interpolation")
+                continue
+
+            # Look for gaps between valid frames
+            for i in range(len(valid_frames) - 1):
+                start_frame = valid_frames[i]
+                end_frame = valid_frames[i + 1]
+                
+                # Verify frames exist and have bbox data
+                start_frame_str = str(start_frame)
+                end_frame_str = str(end_frame)
+                
+                if (start_frame_str not in poses or end_frame_str not in poses or
+                    'bbox' not in poses[start_frame_str] or 'bbox' not in poses[end_frame_str]):
+                    continue
+                
+                # If there's a gap
+                if end_frame - start_frame > 1:
+                    # Get bounding boxes for interpolation
+                    start_bbox = poses[start_frame_str]['bbox']
+                    end_bbox = poses[end_frame_str]['bbox']
+                    
+                    # Process each frame in the gap
+                    for gap_frame in range(start_frame + 1, end_frame):
+                        # Skip if this frame already has an assignment for this role
+                        if str(gap_frame) in poses:
+                            continue
+                        
+                        # Get all unassigned detections in this frame
+                        detections = self.__detections.get(gap_frame, [])
+                        if not detections:
+                            continue
+                        
+                        # Filter out detections that already have a role assignment
+                        other_poses = follow_poses if role == 'lead' else lead_poses
+                        assigned_ids = set()
+                        if str(gap_frame) in other_poses:
+                            assigned_ids.add(other_poses[str(gap_frame)]['id'])
+                        if str(gap_frame) in poses:
+                            assigned_ids.add(poses[str(gap_frame)]['id'])
+                        
+                        unassigned_detections = [
+                            d for d in detections if d['id'] not in assigned_ids
+                        ]
+                        
+                        if not unassigned_detections:
+                            continue
+                        
+                        # Interpolate bbox for this frame
+                        t = (gap_frame - start_frame) / (end_frame - start_frame)
+                        interpolated_bbox = [
+                            start_bbox[i] + t * (end_bbox[i] - start_bbox[i])
+                            for i in range(4)
+                        ]
+                        
+                        # Find detection with highest IoU to interpolated bbox
+                        best_iou = 0
+                        best_detection = None
+                        
+                        for detection in unassigned_detections:
+                            iou = self.__calculate_iou(interpolated_bbox, detection['bbox'])
+                            if iou > best_iou and iou > 0.3:  # Minimum IoU threshold
+                                best_iou = iou
+                                best_detection = detection
+                        
+                        # Assign the best matching detection
+                        if best_detection:
+                            poses[str(gap_frame)] = {
+                                'id': best_detection['id'],
+                                'bbox': best_detection['bbox'],
+                                'confidence': best_detection['confidence'],
+                                'keypoints': best_detection['keypoints'],
+                                'interpolated': True,
+                                'iou_score': best_iou
+                            }
+                            filled_count += 1
+            
+        # Save final results
+        utils.save_numpy_json(lead_poses, self.__lead_file)
+        utils.save_numpy_json(follow_poses, self.__follow_file)
+
+    def __calculate_iou(self, bbox1, bbox2):
+        """Calculate Intersection over Union between two bounding boxes"""
+        # Convert to [x1, y1, x2, y2] format if needed
+        box1 = np.array(bbox1)
+        box2 = np.array(bbox2)
+        
+        # Calculate intersection coordinates
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
+        
+        # Calculate intersection area
+        intersection = max(0, x2 - x1) * max(0, y2 - y1)
+        
+        # Calculate union area
+        box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        union = box1_area + box2_area - intersection
+        
+        # Calculate IoU
+        if union > 0:
+            return intersection / union
+        return 0
 
