@@ -5,10 +5,16 @@ from dancer_tracker import DancerTracker
 from dance_room_tracker import DanceRoomTracker
 from normalize_poses import PoseNormalizer
 from temporal_smoothing import TemporalSmoothing
+from manual_review import ManualReview
 #from debug_video import DebugVideo
 
 def main(video_path:str, output_dir:str, room_dimension:str):
     os.makedirs(output_dir, exist_ok=True)
+
+    manualReview = ManualReview(video_path, output_dir)
+    manualReview.run()
+
+    return
 
     # DANCER TRACKING
 
