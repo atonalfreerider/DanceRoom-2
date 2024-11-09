@@ -1,0 +1,8 @@
+name: DanceRoom2
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - pip
+  - python=3.10
