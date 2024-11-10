@@ -45,14 +45,14 @@ class FootProjector:
         """Project 2D image point to 3D space"""
         # Rescale point to meters
         rescaled_pt = np.array([
-            (img_point[0] - self.__image_size[0] / 2) * PIXEL_TO_METER,
-            -(img_point[1] - self.__image_size[1] / 2) * PIXEL_TO_METER,  # flip Y
+            (img_point[0] - self.__frame_width / 2) * PIXEL_TO_METER,
+            -(img_point[1] - self.__frame_height / 2) * PIXEL_TO_METER,  # flip Y
             0
         ])
         
-        return self.adjust_points([rescaled_pt], frame)[0]
+        return self.__adjust_points([rescaled_pt], frame)[0]
 
-    def adjust_points(self, keypoints: List[np.ndarray], frame: int) -> List[np.ndarray]:
+    def __adjust_points(self, keypoints: List[np.ndarray], frame: int) -> List[np.ndarray]:
         """Adjust points based on camera position and rotation"""
         rotation_matrix = self.__quat_to_matrix(self.__camera_quats[frame])
         focal_length = self.__focal_lengths[frame]
@@ -70,7 +70,7 @@ class FootProjector:
         return adjusted
 
     @staticmethod
-    def ray_plane_intersection(ray_origin: np.ndarray, ray_direction: np.ndarray) -> Optional[np.ndarray]:
+    def __ray_plane_intersection(ray_origin: np.ndarray, ray_direction: np.ndarray) -> Optional[np.ndarray]:
         """Calculate intersection of ray with floor plane (Y=0)"""
         plane_normal = np.array([0, 1, 0])  # Y-up
         plane_d = 0  # Floor at Y=0
@@ -88,13 +88,13 @@ class FootProjector:
         intersection = ray_origin + t * ray_direction
         return intersection
 
-    def img_pt_ray_floor_intersection(self, img_pt: np.ndarray, frame: int) -> Optional[np.ndarray]:
+    def __img_pt_ray_floor_intersection(self, img_pt: np.ndarray, frame: int) -> Optional[np.ndarray]:
         """Project image point to floor"""
         projected_point = self.__project_point(img_pt, frame)
         ray_direction = projected_point - self.__initial_camera_position
         ray_direction = ray_direction / np.linalg.norm(ray_direction)
         
-        return self.ray_plane_intersection(self.__initial_camera_position, ray_direction)
+        return self.__ray_plane_intersection(self.__initial_camera_position, ray_direction)
 
     def project_feet_to_ground(self):
         # Load data
@@ -112,7 +112,7 @@ class FootProjector:
                 for ankle_name, ankle_idx in [('lead_left', 15), ('lead_right', 16)]:
                     ankle_pos = lead_poses[frame]['keypoints'][ankle_idx][:2]  # Get x,y coordinates
                     if ankle_pos[0] != 0 or ankle_pos[1] != 0:  # Check if valid keypoint
-                        floor_pos = self.img_pt_ray_floor_intersection(np.array(ankle_pos), int(frame))
+                        floor_pos = self.__img_pt_ray_floor_intersection(np.array(ankle_pos), int(frame))
                         if floor_pos is not None:
                             frame_ankles[ankle_name] = floor_pos.tolist()
 
@@ -121,7 +121,7 @@ class FootProjector:
                 for ankle_name, ankle_idx in [('follow_left', 15), ('follow_right', 16)]:
                     ankle_pos = follow_poses[frame]['keypoints'][ankle_idx][:2]
                     if ankle_pos[0] != 0 or ankle_pos[1] != 0:
-                        floor_pos = self.img_pt_ray_floor_intersection(np.array(ankle_pos), int(frame))
+                        floor_pos = self.__img_pt_ray_floor_intersection(np.array(ankle_pos), int(frame))
                         if floor_pos is not None:
                             frame_ankles[ankle_name] = floor_pos.tolist()
 
