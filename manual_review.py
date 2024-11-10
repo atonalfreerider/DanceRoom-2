@@ -81,7 +81,7 @@ class ManualReview:
 
             # Save detections-modified.json
             if self.__detections:
-                PoseDataUtils.save_poses(self.__detections, self.__frame_count, self.__detections_modified_file)
+                utils.save_json(self.__detections, self.__detections_modified_file)
                 print(f"Saved modified detections to {self.__detections_modified_file}")
             else:
                 print("Detections data is empty. Skipping save for detections.")
@@ -201,27 +201,86 @@ class ManualReview:
             self.__draw_frame()  # Redraw the frame when we stop dragging
 
     def __assign_role(self, role):
-        if self.__hovered_pose:
-            current_frame_int = int(self.current_frame)  # Ensure the frame key is an integer
+        if not self.__hovered_pose:
+            return
 
-            if role == 'lead':
-                # Assign the hovered_pose to the lead role for the current frame
-                self.__lead[current_frame_int] = self.__hovered_pose
+        current_frame = int(self.current_frame)
+        track_id = self.__hovered_pose['id']
+        
+        # Get the current role of the hovered pose (if any)
+        current_role = None
+        if current_frame in self.__lead and self.__lead[current_frame] and self.__lead[current_frame]['id'] == track_id:
+            current_role = 'lead'
+        elif current_frame in self.__follow and self.__follow[current_frame] and self.__follow[current_frame]['id'] == track_id:
+            current_role = 'follow'
 
-                # If the current frame is also in follow, remove the pose with the same id from follow
-                if current_frame_int in self.__follow and self.__follow[current_frame_int]['id'] == self.__hovered_pose['id']:
-                    del self.__follow[current_frame_int]  # Remove the pose from follow if it matches
+        # Get the other track's ID if we're swapping roles
+        other_track_id = None
+        if role == 'lead' and current_frame in self.__follow:
+            other_track_id = self.__follow[current_frame]['id'] if self.__follow[current_frame] else None
+        elif role == 'follow' and current_frame in self.__lead:
+            other_track_id = self.__lead[current_frame]['id'] if self.__lead[current_frame] else None
 
-            elif role == 'follow':
-                # Assign the hovered_pose to the follow role for the current frame
-                self.__follow[current_frame_int] = self.__hovered_pose
+        # Iterate through subsequent frames
+        for frame in range(current_frame, self.__frame_count):
+            # Get all poses for this frame
+            frame_poses = self.__detections.get(frame, [])
+            
+            # Find our track's pose in this frame
+            track_pose = next((pose for pose in frame_poses if pose['id'] == track_id), None)
+            if not track_pose:
+                break  # Stop if our track is not in this frame
 
-                # If the current frame is also in lead, remove the pose with the same id from lead
-                if current_frame_int in self.__lead and self.__lead[current_frame_int]['id'] == self.__hovered_pose['id']:
-                    del self.__lead[current_frame_int]  # Remove the pose from lead if it matches
+            # If we're doing a role swap
+            if other_track_id is not None:
+                other_track_pose = next((pose for pose in frame_poses if pose['id'] == other_track_id), None)
+                if not other_track_pose:
+                    break  # Stop if the other track is not in this frame
 
-            # Redraw the frame after the assignment
-            self.__draw_frame()
+                # Check if either pose has a different role assignment
+                if frame > current_frame:  # Skip checking the first frame
+                    if (frame in self.__lead and self.__lead[frame] and 
+                        self.__lead[frame]['id'] not in [track_id, other_track_id]):
+                        break
+                    if (frame in self.__follow and self.__follow[frame] and 
+                        self.__follow[frame]['id'] not in [track_id, other_track_id]):
+                        break
+
+                # Perform the swap
+                if role == 'lead':
+                    self.__lead[frame] = track_pose
+                    self.__follow[frame] = other_track_pose
+                else:
+                    self.__lead[frame] = other_track_pose
+                    self.__follow[frame] = track_pose
+
+            # If we're just assigning a new role
+            else:
+                # Check if this pose already has a different role assignment
+                if frame > current_frame:  # Skip checking the first frame
+                    existing_role = None
+                    if frame in self.__lead and self.__lead[frame] and self.__lead[frame]['id'] == track_id:
+                        existing_role = 'lead'
+                    elif frame in self.__follow and self.__follow[frame] and self.__follow[frame]['id'] == track_id:
+                        existing_role = 'follow'
+                    
+                    if existing_role and existing_role != role:
+                        break  # Stop if we encounter a different role assignment
+
+                # Assign the role
+                if role == 'lead':
+                    self.__lead[frame] = track_pose
+                    # Remove from follow if it was there
+                    if frame in self.__follow and self.__follow[frame] and self.__follow[frame]['id'] == track_id:
+                        del self.__follow[frame]
+                else:
+                    self.__follow[frame] = track_pose
+                    # Remove from lead if it was there
+                    if frame in self.__lead and self.__lead[frame] and self.__lead[frame]['id'] == track_id:
+                        del self.__lead[frame]
+
+        # Redraw the frame after all assignments
+        self.__draw_frame()
 
     @staticmethod
     def __mirror_pose(pose):
