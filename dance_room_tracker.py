@@ -9,9 +9,10 @@ from virtual_room import VirtualRoom
 
 
 class DanceRoomTracker:
-    def __init__(self, video_path:str, output_dir:str, room_dimension):
+    def __init__(self, video_path:str, output_dir:str, room_dimension, frame_height:int, frame_width:int, frame_count:int):
         self.__video_path = video_path
         self.__output_dir = output_dir
+        self.__frame_height, self.__frame_width = frame_height, frame_width
         self.__initial_camera_pose_json_path = os.path.join(output_dir, 'initial_camera_pose.json')
         self.__camera_tracking_json_path = os.path.join(output_dir, 'camera_tracking.json')
         
@@ -49,14 +50,13 @@ class DanceRoomTracker:
             self.__rotation_keypoints[self.__initial_camera_pose['frame_num']] = self.__initial_camera_pose['rotation'].copy()
             self.__focal_keypoints[self.__initial_camera_pose['frame_num']] = self.__initial_camera_pose['focal_length']
 
-        self.__frame_height, self.__frame_width = None, None
         self.current_frame = None
 
         # Add timeline UI properties
         self.__timeline_height = 50
         self.__timeline_margin = 20
         self.__scrubber_width = 10
-        self.__total_frames = self.__get_total_frames()
+        self.__total_frames = frame_count
 
         self.__dragging_timeline = False
         self.__camera_has_moved = False
@@ -242,7 +242,6 @@ class DanceRoomTracker:
         if not ret:
             raise ValueError("Could not read first frame")
 
-        self.__frame_height, self.__frame_width = frame.shape[:2]
         self.current_frame = frame
         self.__virtualRoom.set_frame(self.__frame_height, self.__frame_width)
 
@@ -585,12 +584,5 @@ class DanceRoomTracker:
             self.__frame_focal_lengths[frame_idx] = self.__processed_vo_focal_lengths[frame_idx]
 
         print("set rotations and focal lengths from adjusted visual odometry")
-
-    def __get_total_frames(self):
-        """Get total number of frames in video"""
-        cap = cv2.VideoCapture(self.__video_path)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
-        return total
 
     # endregion

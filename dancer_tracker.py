@@ -10,21 +10,15 @@ import utils
 
 # uses DeepFace to find self-similar faces and gender
 class DancerTracker:
-    def __init__(self, input_path:str, output_dir:str):
-        self.__input_path = input_path
-        self.__output_dir = output_dir
+    def __init__(self, video_path:str, output_dir:str, frame_height:int, frame_width:int):
+        self.__video_path = video_path
+        self.__frame_height, self.__frame_width = frame_height, frame_width
 
         self.__detections_file = os.path.join(output_dir, 'detections.json')
         self.__lead_file = os.path.join(output_dir, 'lead.json')
         self.__follow_file = os.path.join(output_dir, 'follow.json')
 
         self.__detections = utils.load_json_integer_keys(self.__detections_file)
-        
-        # Get input video dimensions
-        cap = cv2.VideoCapture(input_path)
-        self.__frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.__frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        cap.release()
 
         # Add new path for analysis cache
         self.__analysis_cache_file = os.path.join(output_dir, 'face_analysis.json')
@@ -62,9 +56,9 @@ class DancerTracker:
         print("Analyzing faces from video...")
         
         # Open video capture
-        cap = cv2.VideoCapture(self.__input_path)
+        cap = cv2.VideoCapture(self.__video_path)
         if not cap.isOpened():
-            raise Exception(f"Could not open video file: {self.__input_path}")
+            raise Exception(f"Could not open video file: {self.__video_path}")
         
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         min_height_threshold = 0.6 * self.__frame_height

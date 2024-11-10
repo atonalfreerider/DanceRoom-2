@@ -10,11 +10,11 @@ from pose_data_utils import PoseDataUtils
 import time
 
 class ManualReview:
-    def __init__(self, video_path, output_dir):
+    def __init__(self, video_path:str, output_dir:str, frame_height:int, frame_width:int, frame_count:int):
         self.__detections_file = os.path.join(output_dir, 'detections.json')
         self.__output_dir = Path(output_dir)
         self.__cap = cv2.VideoCapture(video_path)
-        self.__frame_count = int(self.__cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.__frame_count = frame_count
         self.current_frame = 0
         self.playing = False
         self.__window_name = "Manual Review"
@@ -27,8 +27,7 @@ class ManualReview:
         self.__dragging_keypoint = None
         self.frame_cache = OrderedDict()
         self.max_cache_size = 100
-        self.__frame_width = int(self.__cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.__frame_height = int(self.__cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.__frame_height, self.__frame_width = frame_height, frame_width
         self.__ui_overlay = np.zeros((self.__frame_height, self.__frame_width, 3), dtype=np.uint8)
         self.__draw_ui_overlay()
 
