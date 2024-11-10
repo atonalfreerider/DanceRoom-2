@@ -6,6 +6,7 @@ from dance_room_tracker import DanceRoomTracker
 from normalize_poses import PoseNormalizer
 from temporal_smoothing import TemporalSmoothing
 from manual_review import ManualReview
+from foot_projector import FootProjector
 from debug_video import DebugVideo
 
 def main(video_path:str, output_dir:str, room_dimension:str):
@@ -36,6 +37,9 @@ def main(video_path:str, output_dir:str, room_dimension:str):
 
     smoother = TemporalSmoothing(output_dir)
     smoother.run()
+
+    footProjector = FootProjector(output_dir, parsed_room_dimension)
+    footProjector.project_feet_to_ground()
 
 def parse_dimensions(dimensions_str:str):
     try:
