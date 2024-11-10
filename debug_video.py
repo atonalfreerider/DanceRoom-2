@@ -9,8 +9,8 @@ class DebugVideo:
     def __init__(self, input_path, output_dir):
         self.__input_path = input_path
         self.__output_dir = output_dir
-        self.__lead_file = os.path.join(output_dir, 'lead-normalized.json')
-        self.__follow_file = os.path.join(output_dir, 'follow-normalized.json')
+        self.__lead_file = os.path.join(output_dir, 'lead.json')
+        self.__follow_file = os.path.join(output_dir, 'follow.json')
         self.__lead = utils.load_json(self.__lead_file)
         self.__follow = utils.load_json(self.__follow_file)
 
@@ -42,7 +42,7 @@ class DebugVideo:
                 lead_pose = lead_track.get(str(frame_count))
                 if lead_pose:
                     lead_keypoints = lead_pose['keypoints']
-                    PoseDataUtils.draw_pose(frame, lead_keypoints, lead_pose[id], 'lead')
+                    PoseDataUtils.draw_pose(frame, lead_keypoints, lead_pose['id'], 'lead')
 
 
                 follow_pose = follow_track.get(str(frame_count))
