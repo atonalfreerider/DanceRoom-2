@@ -214,12 +214,19 @@ class ManualReview:
         elif current_frame in self.__follow and self.__follow[current_frame] and self.__follow[current_frame]['id'] == track_id:
             current_role = 'follow'
 
-        # Get the other track's ID if we're swapping roles
+        # Get the other track's ID if there's a pose in the target role
         other_track_id = None
-        if role == 'lead' and current_frame in self.__follow:
-            other_track_id = self.__follow[current_frame]['id'] if self.__follow[current_frame] else None
-        elif role == 'follow' and current_frame in self.__lead:
-            other_track_id = self.__lead[current_frame]['id'] if self.__lead[current_frame] else None
+        if role == 'lead' and current_frame in self.__follow and self.__follow[current_frame]:
+            other_track_id = self.__follow[current_frame]['id']
+        elif role == 'follow' and current_frame in self.__lead and self.__lead[current_frame]:
+            other_track_id = self.__lead[current_frame]['id']
+
+        # Determine if we're swapping roles
+        is_swapping = (
+            (role == 'lead' and current_role == 'follow') or 
+            (role == 'follow' and current_role == 'lead') or
+            other_track_id is not None
+        )
 
         # Iterate through subsequent frames
         for frame in range(current_frame, self.__frame_count):
@@ -231,8 +238,9 @@ class ManualReview:
             if not track_pose:
                 break  # Stop if our track is not in this frame
 
-            # If we're doing a role swap
-            if other_track_id is not None:
+            # If we're swapping roles
+            if is_swapping:
+                # Find the other track's pose
                 other_track_pose = next((pose for pose in frame_poses if pose['id'] == other_track_id), None)
                 if not other_track_pose:
                     break  # Stop if the other track is not in this frame
@@ -250,9 +258,9 @@ class ManualReview:
                 if role == 'lead':
                     self.__lead[frame] = track_pose
                     self.__follow[frame] = other_track_pose
-                else:
-                    self.__lead[frame] = other_track_pose
+                else:  # role == 'follow'
                     self.__follow[frame] = track_pose
+                    self.__lead[frame] = other_track_pose
 
             # If we're just assigning a new role
             else:
@@ -273,7 +281,7 @@ class ManualReview:
                     # Remove from follow if it was there
                     if frame in self.__follow and self.__follow[frame] and self.__follow[frame]['id'] == track_id:
                         del self.__follow[frame]
-                else:
+                else:  # role == 'follow'
                     self.__follow[frame] = track_pose
                     # Remove from lead if it was there
                     if frame in self.__lead and self.__lead[frame] and self.__lead[frame]['id'] == track_id:
