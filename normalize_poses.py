@@ -23,7 +23,7 @@ class PoseNormalizer:
         self.image_center = (self.__frame_width // 2, self.__frame_height // 2)
 
     @staticmethod
-    def find_widest_focal_length(camera_data):
+    def __find_widest_focal_length(camera_data):
         # Extract all non-negative focal lengths
         focal_lengths = [frame_data['focal_length'] for frame_data in camera_data.values() if
                          frame_data['focal_length'] >= 0]
@@ -31,7 +31,7 @@ class PoseNormalizer:
         # Return the minimum (widest) focal length, or None if no non-negative focal length is found
         return min(focal_lengths) if focal_lengths else None
 
-    def normalize_keypoints(self, keypoints, current_focal, target_focal):
+    def __normalize_keypoints(self, keypoints, current_focal, target_focal):
         """
         Normalize keypoints based on focal length change, scaling from image center
         """
@@ -65,7 +65,7 @@ class PoseNormalizer:
         
         return normalized_keypoints
 
-    def normalize_bbox(self, bbox, current_focal, target_focal):
+    def __normalize_bbox(self, bbox, current_focal, target_focal):
         """
         Normalize bounding box coordinates based on focal length change
         """
@@ -82,7 +82,7 @@ class PoseNormalizer:
         
         return [x1_centered, y1_centered, x2_centered, y2_centered]
 
-    def normalize_pose_data(self, pose_data, camera_data, target_focal):
+    def __normalize_pose_data(self, pose_data, camera_data, target_focal):
         normalized_data = {}
         
         for frame_num in pose_data:
@@ -93,14 +93,14 @@ class PoseNormalizer:
             frame_data = pose_data[frame_num].copy()
             
             # Normalize keypoints
-            frame_data['keypoints'] = self.normalize_keypoints(
+            frame_data['keypoints'] = self.__normalize_keypoints(
                 frame_data['keypoints'],
                 current_focal,
                 target_focal
             )
             
             # Normalize bbox
-            frame_data['bbox'] = self.normalize_bbox(
+            frame_data['bbox'] = self.__normalize_bbox(
                 frame_data['bbox'],
                 current_focal,
                 target_focal
@@ -110,7 +110,7 @@ class PoseNormalizer:
         
         return normalized_data
 
-    def normalize_frame(self, frame, current_focal):
+    def __normalize_frame(self, frame, current_focal):
         """Scale frame based on focal length difference"""
         if current_focal <= 0 or self.__widest_focal <= 0:
             return frame  # Return original frame if we have invalid focal lengths
@@ -166,7 +166,7 @@ class PoseNormalizer:
             print(f"Error processing frame with scale_factor {scale_factor}: {str(e)}")
             return frame  # Return original frame if any error occurs
 
-    def process_video(self, output_path):
+    def __process_video(self, output_path):
         cap = cv2.VideoCapture(self.__video_path)
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -188,7 +188,7 @@ class PoseNormalizer:
                     break
 
                 # Normalize frame
-                normalized_frame = self.normalize_frame(frame, current_focal)
+                normalized_frame = self.__normalize_frame(frame, current_focal)
                 out.write(normalized_frame)
 
                 frame_idx += 1
@@ -197,7 +197,7 @@ class PoseNormalizer:
         cap.release()
         out.release()
 
-    def normalize_vo_data(self):
+    def __normalize_vo_data(self):
         """Normalize visual odometry data and combine with initial pose"""
         # Load initial camera pose
         initial_pose = utils.load_json(os.path.join(self.__output_dir, 'initial_camera_pose.json'))
@@ -239,14 +239,14 @@ class PoseNormalizer:
         self.__follow_data = utils.load_json(os.path.join(self.__output_dir, 'follow.json'))
         
         # Find widest focal length
-        self.__widest_focal = self.find_widest_focal_length(self.__camera_data)
+        self.__widest_focal = self.__find_widest_focal_length(self.__camera_data)
         print(f"Widest focal length found: {self.__widest_focal}")
         
         # Normalize pose data
-        lead_normalized = self.normalize_pose_data(self.__lead_data, self.__camera_data, self.__widest_focal)
-        follow_normalized = self.normalize_pose_data(self.__follow_data, self.__camera_data, self.__widest_focal)
+        lead_normalized = self.__normalize_pose_data(self.__lead_data, self.__camera_data, self.__widest_focal)
+        follow_normalized = self.__normalize_pose_data(self.__follow_data, self.__camera_data, self.__widest_focal)
 
-        self.normalize_vo_data()
+        self.__normalize_vo_data()
         
         # Save normalized pose data
         lead_normalized_path = os.path.join(self.__output_dir, 'lead-normalized.json')
@@ -256,4 +256,4 @@ class PoseNormalizer:
         
         # Process video
         normalized_video_path = os.path.join(self.__output_dir, 'normalized_video.mp4')
-        self.process_video(normalized_video_path)
+        self.__process_video(normalized_video_path)

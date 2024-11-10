@@ -16,11 +16,11 @@ DEFAULT_DEVICE = (
 
 class CoTracker:
     def __init__(self):
-        self.model = CoTrackerPredictor(
+        self.__model = CoTrackerPredictor(
             checkpoint="checkpoints/scaled_offline.pth",
             window_len=60,
         )
-        self.model = self.model.to(DEFAULT_DEVICE)
+        self.__model = self.__model.to(DEFAULT_DEVICE)
 
     def track(self, video_path, points, start_frame=0, num_frames=50):
         """Track points through video segment with automatic batch size adjustment"""
@@ -70,7 +70,7 @@ class CoTracker:
                         batch_queries = queries.clone()
                         batch_queries[..., 0] = 0  # Reset time to 0 for each batch
                         
-                        pred_tracks, pred_visibility = self.model(
+                        pred_tracks, pred_visibility = self.__model(
                             batch_video,
                             queries=batch_queries,
                             backward_tracking=True
@@ -86,7 +86,7 @@ class CoTracker:
                     return final_tracks, final_visibilities
                 else:
                     # Process all frames at once
-                    pred_tracks, pred_visibility = self.model(
+                    pred_tracks, pred_visibility = self.__model(
                         video,
                         queries=queries,
                         backward_tracking=True

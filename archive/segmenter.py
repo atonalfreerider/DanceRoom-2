@@ -9,20 +9,20 @@ from scipy.signal import savgol_filter
 class Segmenter:
     def __init__(self, video_path, output_dir):
         # Create output directories
-        self.video_path = video_path
-        self.output_dir = output_dir
-        self.figure_mask_dir = os.path.join(output_dir, "figure-masks")
+        self.__video_path = video_path
+        self.__output_dir = output_dir
+        self.__figure_mask_dir = os.path.join(output_dir, "figure-masks")
 
-        self.depth_dir = os.path.join(output_dir, 'depth')
-        os.makedirs(self.figure_mask_dir, exist_ok=True)
+        self.__depth_dir = os.path.join(output_dir, 'depth')
+        os.makedirs(self.__figure_mask_dir, exist_ok=True)
 
     def process_video(self):
         # return if mask dir already contains files
-        if len(os.listdir(self.figure_mask_dir)) > 0:
+        if len(os.listdir(self.__figure_mask_dir)) > 0:
             print("Figure masks already exist. Skipping video processing.")
             return
 
-        cap = cv2.VideoCapture(self.video_path)
+        cap = cv2.VideoCapture(self.__video_path)
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -33,7 +33,7 @@ class Segmenter:
         # First pass: Calculate D values for each frame
         pbar = tqdm(total=total_frames, desc="Calculating D values")
         for frame_count in range(total_frames):
-            depth_map = self.load_depth_map(int(frame_count))
+            depth_map = self.__load_depth_map(int(frame_count))
             if depth_map is None:
                 D_values.append(None)
                 pbar.update(1)
@@ -70,7 +70,7 @@ class Segmenter:
             ret, frame = cap.read()
             if not ret:
                 break
-            depth_map = self.load_depth_map(int(frame_count))
+            depth_map = self.__load_depth_map(int(frame_count))
             if depth_map is None or D_values[frame_count] is None:
                 pbar.update(1)
                 continue
@@ -94,7 +94,7 @@ class Segmenter:
             masked_frame = cv2.bitwise_and(frame, frame, mask=mask)
 
             # Save the masked frame
-            mask_file = os.path.join(self.figure_mask_dir, f'{frame_count:06d}.png')
+            mask_file = os.path.join(self.__figure_mask_dir, f'{frame_count:06d}.png')
             cv2.imwrite(mask_file, masked_frame)
 
             pbar.update(1)
@@ -103,8 +103,8 @@ class Segmenter:
         pbar.close()
         print("Video processing completed.")
 
-    def load_depth_map(self, frame_num):
-        depth_file = os.path.join(self.depth_dir, f'{frame_num:06d}.npz')
+    def __load_depth_map(self, frame_num):
+        depth_file = os.path.join(self.__depth_dir, f'{frame_num:06d}.npz')
         if os.path.exists(depth_file):
             with np.load(depth_file) as data:
                 # Try to get the first key in the archive
