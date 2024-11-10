@@ -6,15 +6,14 @@ import utils
 PIXEL_TO_METER = 0.000264583
 
 class FootProjector:
-    def __init__(self, output_dir: str):
+    def __init__(self, output_dir: str, frame_height:int, frame_width:int):
         self.__output_dir = output_dir
         self.__lead_file = os.path.join(output_dir, 'lead_smoothed.json')
         self.__follow_file = os.path.join(output_dir, 'follow_smoothed.json')
         self.__camera_tracking_file = os.path.join(output_dir, 'camera_tracking.json')
-        self.__initial_camera_pose_file = os.path.join(output_dir, 'initial_camera_pose.json')
-        self.__initial_camera_pose = utils.load_json(self.__initial_camera_pose_file)
+        self.__initial_camera_pose = utils.load_json(os.path.join(output_dir, 'initial_camera_pose.json'))
         self.__initial_camera_position = np.array(self.__initial_camera_pose['position'])
-        self.__image_size = (1920, 1080)  # Assuming HD resolution, adjust if needed
+        self.__frame_height, self.__frame_width = frame_height, frame_width
         
         # Extract camera data
         camera_tracking = utils.load_json_integer_keys(self.__camera_tracking_file)
@@ -23,7 +22,7 @@ class FootProjector:
         self.__focal_lengths = [frame['focal_length'] for frame in camera_tracking.values()]
 
     @staticmethod
-    def quat_to_matrix(q: np.ndarray) -> np.ndarray:
+    def __quat_to_matrix(q: np.ndarray) -> np.ndarray:
         """Convert quaternion [x,y,z,w] to 3x3 rotation matrix"""
         x, y, z, w = q
         
@@ -37,12 +36,12 @@ class FootProjector:
             [2*(xz - wy), 2*(yz + wx), 1 - 2*(x2 + y2)]
         ])
 
-    def forward(self, frame: int) -> np.ndarray:
+    def __forward(self, frame: int) -> np.ndarray:
         """Get forward vector for given frame"""
-        rotation_matrix = self.quat_to_matrix(self.__camera_quats[frame])
+        rotation_matrix = self.__quat_to_matrix(self.__camera_quats[frame])
         return np.dot(rotation_matrix, np.array([0, 0, 1]))
 
-    def project_point(self, img_point: np.ndarray, frame: int) -> np.ndarray:
+    def __project_point(self, img_point: np.ndarray, frame: int) -> np.ndarray:
         """Project 2D image point to 3D space"""
         # Rescale point to meters
         rescaled_pt = np.array([
@@ -55,7 +54,7 @@ class FootProjector:
 
     def adjust_points(self, keypoints: List[np.ndarray], frame: int) -> List[np.ndarray]:
         """Adjust points based on camera position and rotation"""
-        rotation_matrix = self.quat_to_matrix(self.__camera_quats[frame])
+        rotation_matrix = self.__quat_to_matrix(self.__camera_quats[frame])
         focal_length = self.__focal_lengths[frame]
 
         # Translate to camera center
@@ -65,7 +64,7 @@ class FootProjector:
         adjusted = [np.dot(rotation_matrix, (pt - self.__initial_camera_position)) + self.__initial_camera_position for pt in adjusted]
         
         # Translate to focal length
-        forward = self.forward(frame)
+        forward = self.__forward(frame)
         adjusted = [pt + forward * focal_length for pt in adjusted]
         
         return adjusted
@@ -91,7 +90,7 @@ class FootProjector:
 
     def img_pt_ray_floor_intersection(self, img_pt: np.ndarray, frame: int) -> Optional[np.ndarray]:
         """Project image point to floor"""
-        projected_point = self.project_point(img_pt, frame)
+        projected_point = self.__project_point(img_pt, frame)
         ray_direction = projected_point - self.__initial_camera_position
         ray_direction = ray_direction / np.linalg.norm(ray_direction)
         
