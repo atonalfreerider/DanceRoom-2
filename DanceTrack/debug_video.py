@@ -2,7 +2,7 @@ import os
 import cv2
 from tqdm import tqdm
 import utils
-from pose_data_utils import PoseDataUtils
+from DanceTrack.pose_data_utils import PoseDataUtils
 
 
 class DebugVideo:

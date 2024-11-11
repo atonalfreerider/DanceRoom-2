@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from pose_data_utils import PoseDataUtils
+from DanceTrack.pose_data_utils import PoseDataUtils
 import utils
 
 class TemporalSmoothing:

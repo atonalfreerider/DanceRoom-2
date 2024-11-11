@@ -4,5 +4,12 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - pip
   - python=3.10
+  - pip
+    - ultralytics
+    - deepface
+    - scipy
+    - scikit-learn
+    - opencv-python
+    - tf-keras==2.12.0
+    - tensorflow==2.14.1

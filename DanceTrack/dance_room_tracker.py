@@ -5,7 +5,7 @@ import os
 import json
 
 import utils
-from virtual_room import VirtualRoom
+from DanceTrack.virtual_room import VirtualRoom
 
 
 class DanceRoomTracker:

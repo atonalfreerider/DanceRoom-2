@@ -1,14 +1,14 @@
 import os
 import cv2
 import argparse
-from yolo_pose import YOLOPose
-from dancer_tracker import DancerTracker
-from dance_room_tracker import DanceRoomTracker
-from normalize_poses import PoseNormalizer
-from temporal_smoothing import TemporalSmoothing
-from manual_review import ManualReview
-from foot_projector import FootProjector
-from debug_video import DebugVideo
+from DanceTrack.yolo_pose import YOLOPose
+from DanceTrack.dancer_tracker import DancerTracker
+from DanceTrack.dance_room_tracker import DanceRoomTracker
+from DanceTrack.normalize_poses import PoseNormalizer
+from DanceTrack.temporal_smoothing import TemporalSmoothing
+from DanceTrack.manual_review import ManualReview
+from DanceTrack.foot_projector import FootProjector
+from DanceTrack.debug_video import DebugVideo
 
 def main(video_path:str, output_dir:str, room_dimension:str):
     os.makedirs(output_dir, exist_ok=True)

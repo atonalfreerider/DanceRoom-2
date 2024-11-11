@@ -6,7 +6,7 @@ from collections import OrderedDict
 import os
 
 import utils
-from pose_data_utils import PoseDataUtils
+from DanceTrack.pose_data_utils import PoseDataUtils
 import time
 
 class ManualReview:
