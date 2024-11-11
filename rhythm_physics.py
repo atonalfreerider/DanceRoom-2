@@ -322,6 +322,127 @@ def process_frames_with_rotation_correction(frames, ground_ankles, role):
     
     return processed_frames
 
+def smooth_floor_positions(ground_ankles, window_size=20):
+    """Apply moving average smooth to floor ankle positions"""
+    smoothed_ankles = {}
+    
+    # Convert frame indices to integers and sort
+    frame_indices = sorted([int(k) for k in ground_ankles.keys()])
+    max_frame = max(frame_indices)
+    
+    # Initialize arrays for each ankle type
+    positions = {
+        'lead_left': {'x': [], 'z': []},
+        'lead_right': {'x': [], 'z': []},
+        'follow_left': {'x': [], 'z': []},
+        'follow_right': {'x': [], 'z': []}
+    }
+    
+    # Collect all positions
+    for frame in frame_indices:
+        frame_str = str(frame)
+        for ankle_type in positions:
+            if ankle_type in ground_ankles[frame_str]:
+                pos = ground_ankles[frame_str][ankle_type]
+                positions[ankle_type]['x'].append(pos[0])
+                positions[ankle_type]['z'].append(pos[2])
+            else:
+                # If position missing, use nearest available position
+                for nearby_frame in range(frame-5, frame+6):
+                    if (str(nearby_frame) in ground_ankles and 
+                        ankle_type in ground_ankles[str(nearby_frame)]):
+                        pos = ground_ankles[str(nearby_frame)][ankle_type]
+                        positions[ankle_type]['x'].append(pos[0])
+                        positions[ankle_type]['z'].append(pos[2])
+                        break
+                else:
+                    # If no nearby position found, use previous or zero
+                    positions[ankle_type]['x'].append(
+                        positions[ankle_type]['x'][-1] if positions[ankle_type]['x'] else 0)
+                    positions[ankle_type]['z'].append(
+                        positions[ankle_type]['z'][-1] if positions[ankle_type]['z'] else 0)
+    
+    # Apply moving average smooth
+    for ankle_type in positions:
+        x_smooth = np.convolve(positions[ankle_type]['x'], 
+                             np.ones(window_size)/window_size, mode='valid')
+        z_smooth = np.convolve(positions[ankle_type]['z'], 
+                             np.ones(window_size)/window_size, mode='valid')
+        
+        # Pad the smoothed arrays to match original length
+        pad_start = window_size // 2
+        pad_end = window_size - 1 - pad_start
+        x_smooth = np.pad(x_smooth, (pad_start, pad_end), mode='edge')
+        z_smooth = np.pad(z_smooth, (pad_start, pad_end), mode='edge')
+        
+        # Store smoothed positions
+        for i, frame in enumerate(frame_indices):
+            if str(frame) not in smoothed_ankles:
+                smoothed_ankles[str(frame)] = {}
+            smoothed_ankles[str(frame)][ankle_type] = [x_smooth[i], 0, z_smooth[i]]
+    
+    return smoothed_ankles
+
+def calculate_interpolation_factor(error_distance, max_error=0.25):
+    """Calculate interpolation factor based on error distance"""
+    return min(error_distance / max_error, 1.0)
+
+def guide_poses_to_ground(frames, smoothed_ankles, role):
+    """Guide poses towards smoothed ground positions while maintaining continuity"""
+    if not frames:
+        return frames
+    
+    guided_frames = copy.deepcopy(frames)
+    cumulative_translation = [0, 0, 0]  # Keep track of accumulated translation
+    
+    for i in range(len(guided_frames)):
+        frame_str = str(i)
+        if frame_str not in smoothed_ankles:
+            continue
+            
+        # Find grounded foot
+        floor_side, floor_ankle = find_floor_foot(guided_frames[i])
+        floor_key = f'{role}_{floor_side}'  # Use correct role
+        
+        if floor_key not in smoothed_ankles[frame_str]:
+            continue
+            
+        # Apply cumulative translation to current ankle position for error calculation
+        current_ankle_pos = {
+            'x': floor_ankle['x'] + cumulative_translation[0],
+            'y': floor_ankle['y'] + cumulative_translation[1],
+            'z': floor_ankle['z'] + cumulative_translation[2]
+        }
+        
+        target_pos = smoothed_ankles[frame_str][floor_key]
+        
+        # Calculate error and interpolation factor
+        error_distance = np.sqrt(
+            (current_ankle_pos['x'] - target_pos[0])**2 + 
+            (current_ankle_pos['z'] - target_pos[2])**2
+        )
+        
+        interp_factor = calculate_interpolation_factor(error_distance)
+        
+        # Calculate frame translation
+        frame_translation = [
+            (target_pos[0] - current_ankle_pos['x']) * interp_factor,
+            0,
+            (target_pos[2] - current_ankle_pos['z']) * interp_factor
+        ]
+        
+        # Update cumulative translation
+        cumulative_translation = [
+            cumulative_translation[0] + frame_translation[0],
+            cumulative_translation[1] + frame_translation[1],
+            cumulative_translation[2] + frame_translation[2]
+        ]
+        
+        # Apply cumulative translation to current frame
+        guided_frames[i] = translate_pose(guided_frames[i], frame_translation)
+    
+    return guided_frames
+
 def main(output_dir:str, lead_follow_height_ratio:float):
     ground_ankle_path = os.path.join(output_dir, 'all_floor_ankles.json')
     ground_ankles = utils.load_json(ground_ankle_path)
@@ -341,11 +462,18 @@ def main(output_dir:str, lead_follow_height_ratio:float):
     aligned_follow_keypoints = process_frames_with_rotation_correction(
         follow_keypoints, ground_ankles, 'follow')
 
-    # Save aligned poses
+    # Smooth floor positions
+    smoothed_ankles = smooth_floor_positions(ground_ankles)
+    
+    # Guide poses to smoothed ground positions with correct roles
+    guided_lead_keypoints = guide_poses_to_ground(aligned_lead_keypoints, smoothed_ankles, 'lead')
+    guided_follow_keypoints = guide_poses_to_ground(aligned_follow_keypoints, smoothed_ankles, 'follow')
+
+    # Save final poses
     lead_output_path = os.path.join(output_dir, 'lead_aligned_keypoints_3d.json')
     follow_output_path = os.path.join(output_dir, 'follow_aligned_keypoints_3d.json')
-    utils.save_json(aligned_lead_keypoints, lead_output_path)
-    utils.save_json(aligned_follow_keypoints, follow_output_path)
+    utils.save_json(guided_lead_keypoints, lead_output_path)
+    utils.save_json(guided_follow_keypoints, follow_output_path)
 
     dir_path = Path(output_dir)
     dir_name = dir_path.stem
