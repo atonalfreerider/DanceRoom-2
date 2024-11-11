@@ -121,7 +121,98 @@ def process_frames_with_discontinuity_correction(frames, ground_ankles, role):
     
     return processed_frames
 
-def main(output_dir:str):
+def get_height(pose_frame):
+    """Calculate height from legs and spine up to neck"""
+    # Left leg
+    l_thigh = np.array([pose_frame[4]['x'] - pose_frame[1]['x'],
+                       pose_frame[4]['y'] - pose_frame[1]['y'],
+                       pose_frame[4]['z'] - pose_frame[1]['z']])
+    l_calf = np.array([pose_frame[7]['x'] - pose_frame[4]['x'],
+                      pose_frame[7]['y'] - pose_frame[4]['y'],
+                      pose_frame[7]['z'] - pose_frame[4]['z']])
+    
+    # Right leg
+    r_thigh = np.array([pose_frame[5]['x'] - pose_frame[2]['x'],
+                       pose_frame[5]['y'] - pose_frame[2]['y'],
+                       pose_frame[5]['z'] - pose_frame[2]['z']])
+    r_calf = np.array([pose_frame[8]['x'] - pose_frame[5]['x'],
+                      pose_frame[8]['y'] - pose_frame[5]['y'],
+                      pose_frame[8]['z'] - pose_frame[5]['z']])
+    
+    # Spine segments
+    spine1 = np.array([pose_frame[3]['x'] - pose_frame[0]['x'],
+                      pose_frame[3]['y'] - pose_frame[0]['y'],
+                      pose_frame[3]['z'] - pose_frame[0]['z']])
+    spine2 = np.array([pose_frame[6]['x'] - pose_frame[3]['x'],
+                      pose_frame[6]['y'] - pose_frame[3]['y'],
+                      pose_frame[6]['z'] - pose_frame[3]['z']])
+    spine3 = np.array([pose_frame[9]['x'] - pose_frame[6]['x'],
+                      pose_frame[9]['y'] - pose_frame[6]['y'],
+                      pose_frame[9]['z'] - pose_frame[6]['z']])
+    neck = np.array([pose_frame[12]['x'] - pose_frame[9]['x'],
+                    pose_frame[12]['y'] - pose_frame[9]['y'],
+                    pose_frame[12]['z'] - pose_frame[9]['z']])
+    
+    # Calculate lengths
+    l_leg_length = np.linalg.norm(l_thigh) + np.linalg.norm(l_calf)
+    r_leg_length = np.linalg.norm(r_thigh) + np.linalg.norm(r_calf)
+    spine_length = (np.linalg.norm(spine1) + np.linalg.norm(spine2) + 
+                   np.linalg.norm(spine3) + np.linalg.norm(neck))
+    
+    # Use average of left and right leg
+    return (l_leg_length + r_leg_length) / 2 + spine_length
+
+def get_animation_center(frames):
+    """Get the center point of the entire animation"""
+    all_x = []
+    all_z = []
+    for frame in frames:
+        for joint in frame:
+            all_x.append(joint['x'])
+            all_z.append(joint['z'])
+    
+    return np.mean(all_x), 0, np.mean(all_z)
+
+def scale_animation(frames, scale_factor):
+    """Scale entire animation uniformly"""
+    if not frames:
+        return frames
+    
+    scaled_frames = []
+    for frame in frames:
+        scaled_frame = copy.deepcopy(frame)
+        for joint in scaled_frame:
+            # Scale all coordinates
+            joint['x'] *= scale_factor
+            joint['y'] *= scale_factor
+            joint['z'] *= scale_factor
+        
+        scaled_frames.append(scaled_frame)
+    
+    return scaled_frames
+
+def scale_poses_to_match_ratio(lead_frames, follow_frames, target_ratio):
+    """Scale follow animation to match target height ratio with lead"""
+    if not lead_frames or not follow_frames:
+        return follow_frames
+    
+    # Calculate initial heights from frame 0
+    lead_height = get_height(lead_frames[0])
+    follow_height = get_height(follow_frames[0])
+    
+    # Calculate current ratio and needed scale factor
+    current_ratio = follow_height / lead_height
+    scale_factor = target_ratio / current_ratio
+    
+    print(f"Current height ratio: {current_ratio:.3f}")
+    print(f"Applying scale factor: {scale_factor:.3f} to match target ratio: {target_ratio:.3f}")
+    
+    # Scale entire follow animation
+    scaled_follow_frames = scale_animation(follow_frames, scale_factor)
+    
+    return scaled_follow_frames
+
+def main(output_dir:str, lead_follow_height_ratio:float):
     ground_ankle_path = os.path.join(output_dir, 'all_floor_ankles.json')
     ground_ankles = utils.load_json(ground_ankle_path)
 
@@ -131,7 +222,10 @@ def main(output_dir:str):
     follow_keypoints_path = os.path.join(output_dir, 'follow_smoothed_keypoints_3d.json')
     follow_keypoints = utils.load_json(follow_keypoints_path)
 
-    # Process both dancers with discontinuity correction
+    # First scale the follow poses to match height ratio
+    follow_keypoints = scale_poses_to_match_ratio(lead_keypoints, follow_keypoints, lead_follow_height_ratio)
+
+    # Then process both dancers with discontinuity correction
     aligned_lead_keypoints = process_frames_with_discontinuity_correction(
         lead_keypoints, ground_ankles, 'lead')
     aligned_follow_keypoints = process_frames_with_discontinuity_correction(
@@ -153,6 +247,8 @@ def main(output_dir:str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Align 3D poses, and compute rhythm physics, patterns.")
     parser.add_argument("--output_dir", help="Path to the output directory")
+    parser.add_argument("--lead_follow_height_ratio", type=float, default=0.875,
+                      help="Target ratio of follow height to lead height")
     args = parser.parse_args()
 
-    main(args.output_dir)
+    main(args.output_dir, args.lead_follow_height_ratio)
