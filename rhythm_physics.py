@@ -162,17 +162,6 @@ def get_height(pose_frame):
     # Use average of left and right leg
     return (l_leg_length + r_leg_length) / 2 + spine_length
 
-def get_animation_center(frames):
-    """Get the center point of the entire animation"""
-    all_x = []
-    all_z = []
-    for frame in frames:
-        for joint in frame:
-            all_x.append(joint['x'])
-            all_z.append(joint['z'])
-    
-    return np.mean(all_x), 0, np.mean(all_z)
-
 def scale_animation(frames, scale_factor):
     """Scale entire animation uniformly"""
     if not frames:
@@ -212,47 +201,8 @@ def scale_poses_to_match_ratio(lead_frames, follow_frames, target_ratio):
     
     return scaled_follow_frames
 
-def rotate_point_around_y(point, center, angle):
-    """Rotate a point around Y axis centered at given point"""
-    # Translate to origin
-    x = point['x'] - center[0]
-    z = point['z'] - center[2]
-    
-    # Rotate
-    new_x = x * np.cos(angle) - z * np.sin(angle)
-    new_z = x * np.sin(angle) + z * np.cos(angle)
-    
-    # Translate back
-    return {
-        'x': new_x + center[0],
-        'y': point['y'],
-        'z': new_z + center[2]
-    }
-
-def rotate_pose_around_y(pose, center, angle):
-    """Rotate entire pose around Y axis centered at given point"""
-    rotated_pose = []
-    for joint in pose:
-        rotated_joint = rotate_point_around_y(joint, center, angle)
-        rotated_pose.append(rotated_joint)
-    return rotated_pose
-
-def find_optimal_rotation(ankle_pos, target_pos, center):
-    """Find rotation angle that minimizes distance between ankle and target"""
-    def distance_after_rotation(angle):
-        rotated = rotate_point_around_y(ankle_pos, center, angle)
-        return ((rotated['x'] - target_pos[0])**2 + 
-                (rotated['z'] - target_pos[2])**2)
-    
-    # Try angles from -pi to pi to find minimum distance
-    angles = np.linspace(-np.pi, np.pi, 360)
-    distances = [distance_after_rotation(angle) for angle in angles]
-    best_angle = angles[np.argmin(distances)]
-    
-    return best_angle
-
-def process_frames_with_rotation_correction(frames, ground_ankles, role):
-    """Process frames with initial alignment and rotation correction at discontinuities"""
+def process_frame_discontinuities(frames, ground_ankles, role):
+    """Process frames with initial alignment at discontinuities"""
     if not frames:
         return []
     
@@ -304,22 +254,7 @@ def process_frames_with_rotation_correction(frames, ground_ankles, role):
             # Apply translation to all frames from discontinuity onwards
             for j in range(discontinuity_frame, len(processed_frames)):
                 processed_frames[j] = translate_pose(processed_frames[j], correction_translation)
-            
-            # Find optimal rotation around frame 0 ground position
-            floor_side, floor_ankle = find_floor_foot(processed_frames[discontinuity_frame])
-            angle = find_optimal_rotation(
-                floor_ankle,
-                target_pos,
-                frame_0_ground_pos
-            )
-            
-            # Apply rotation to all frames
-            processed_frames = [rotate_pose_around_y(
-                frame,
-                frame_0_ground_pos,
-                angle
-            ) for frame in processed_frames]
-    
+
     return processed_frames
 
 def smooth_floor_positions(ground_ankles, window_size=20):
@@ -457,9 +392,9 @@ def main(output_dir:str, lead_follow_height_ratio:float):
     follow_keypoints = scale_poses_to_match_ratio(lead_keypoints, follow_keypoints, lead_follow_height_ratio)
 
     # Then process both dancers with rotation correction
-    aligned_lead_keypoints = process_frames_with_rotation_correction(
+    aligned_lead_keypoints = process_frame_discontinuities(
         lead_keypoints, ground_ankles, 'lead')
-    aligned_follow_keypoints = process_frames_with_rotation_correction(
+    aligned_follow_keypoints = process_frame_discontinuities(
         follow_keypoints, ground_ankles, 'follow')
 
     # Smooth floor positions
