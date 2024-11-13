@@ -1,6 +1,5 @@
 import numpy as np
 import cv2
-from scipy.spatial.transform import Rotation
 
 
 class VirtualRoom:
@@ -92,9 +91,6 @@ class VirtualRoom:
 
     def draw_virtual_room(self, frame, position, rotation, focal_length):
         """Draw the virtual room borders and floor origin"""
-        # Get camera parameters
-        fx = fy = min(self.__frame_height, self.__frame_width)
-        cx, cy = self.__frame_width / 2, self.__frame_height / 2
 
         # Generate room vertices with origin at floor center
         hw, hd = self.__room_width / 2, self.__room_depth / 2
@@ -111,12 +107,6 @@ class VirtualRoom:
             rotation,
             position,
             focal_length)
-
-        def is_point_in_frame(point):
-            if point is None:
-                return False
-            return (0 <= point[0] < self.__frame_width and
-                    0 <= point[1] < self.__frame_height)
 
         def clip_line(p1, p2, i1, i2):
             """Clip line to frame boundaries and check visibility"""
@@ -166,6 +156,12 @@ class VirtualRoom:
         x_count = int(self.__room_width / self.__grid_size) - 1
         z_count = int(self.__room_depth / self.__grid_size) - 1
 
+        def is_point_in_frame(point):
+            if point is None:
+                return False
+            return (0 <= point[0] < self.__frame_width and
+                    0 <= point[1] < self.__frame_height)
+
         # Create grid starting from back to front, left to right
         for i in range(z_count):
             z = -hd + self.__grid_size + i * self.__grid_size  # Start from back wall
@@ -175,6 +171,7 @@ class VirtualRoom:
                 # Define cross points in world coordinates (y=0 for floor)
                 cross_center = np.array([x, 0, z])
                 cross_points = [
+                    cross_center,
                     cross_center + np.array([-cross_size, 0, 0]),  # Right (flipped)
                     cross_center - np.array([-cross_size, 0, 0]),  # Left (flipped)
                     cross_center + np.array([0, 0, cross_size]),  # Forward
@@ -182,134 +179,44 @@ class VirtualRoom:
                 ]
 
                 # Project all points of the cross
-                pixel_points = []
-                all_visible = True
-                for point in [cross_center] + cross_points:
-                    # Transform point to camera space
-                    point_cam = rotation.inv().apply(point - position)
+                cross_pixel_points, cross_behind = self.project_points(
+                    cross_points,
+                    rotation,
+                    position,
+                    focal_length)
 
-                    if point_cam[2] <= 0:  # Behind camera
-                        all_visible = False
-                        break
-
-                    # Project to image plane
-                    x_proj = -point_cam[0] / point_cam[2]
-                    y_proj = -point_cam[1] / point_cam[2]
-
-                    # Convert to pixel coordinates
-                    pixel_x = int(x_proj * fx * focal_length + cx)
-                    pixel_y = int(y_proj * fx * focal_length + cy)
-
-                    # Check if point is in frame
-                    if not (0 <= pixel_x < self.__frame_width and 0 <= pixel_y < self.__frame_height):
-                        all_visible = False
-                        break
-
-                    pixel_points.append((pixel_x, pixel_y))
+                center = cross_pixel_points[0]
+                all_visible = not any(cross_behind) and is_point_in_frame(center)
 
                 # Draw cross if all points are visible
                 if all_visible:
-                    center = pixel_points[0]
-                    right = pixel_points[1]
-                    left = pixel_points[2]
-                    forward = pixel_points[3]
-                    back = pixel_points[4]
+                    right = cross_pixel_points[1]
+                    left = cross_pixel_points[2]
+                    forward = cross_pixel_points[3]
+                    back = cross_pixel_points[4]
 
                     cv2.line(frame, center, right, (0, 0, 255), 1)  # Red cross
                     cv2.line(frame, center, left, (0, 0, 255), 1)  # Red cross
                     cv2.line(frame, center, forward, (0, 0, 255), 1)  # Red cross
                     cv2.line(frame, center, back, (0, 0, 255), 1)  # Red cross
 
-        # Draw floor origin and axes only if in front of camera
-        origin_cam = rotation.inv().apply(-position)
-        if origin_cam[2] > 0:  # Only draw if origin is in front of camera
-            origin = [0, 0, 0]  # Floor center (y=0)
-            origin_cam = rotation.inv().apply(origin - position)
+        origin_points = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]
+        projected_origin, origin_behind = self.project_points(
+            origin_points,
+            rotation,
+            position,
+            focal_length)
 
-            if origin_cam[2] > 0:
-                x = -origin_cam[0] / origin_cam[2]
-                y = -origin_cam[1] / origin_cam[2]
-                origin_pixel = (int(x * fx * focal_length + cx),
-                                int(y * fx * focal_length + cy))
+        origin_pt = projected_origin[0]
+        origin_visible = not any(origin_behind) and is_point_in_frame(origin_pt)
+        # Draw cross if all points are visible
+        if origin_visible:
+            x_origin = projected_origin[1]
+            y_origin = projected_origin[2]
+            z_origin = projected_origin[3]
 
-                if is_point_in_frame(origin_pixel):
-                    # Draw axes only if origin is visible
-                    for axis, color in [
-                        ([1, 0, 0], (0, 0, 255)),  # X axis (red)
-                        ([0, 1, 0], (0, 255, 0)),  # Y axis (green)
-                        ([0, 0, 1], (255, 0, 0))  # Z axis (blue)
-                    ]:
-                        end_cam = rotation.inv().apply(axis - position)
-                        if end_cam[2] > 0:
-                            x = -end_cam[0] / end_cam[2]
-                            y = -end_cam[1] / end_cam[2]
-                            end_pixel = (int(x * fx * focal_length + cx),
-                                         int(y * fx * focal_length + cy))
-
-                            if clip_line(origin_pixel, end_pixel, 0, 0):  # Using 0,0 as dummy indices
-                                cv2.line(frame, origin_pixel, end_pixel, color, 2)
-
-                    cv2.circle(frame, origin_pixel, 5, (255, 255, 255), -1)  # Origin point in white
+            cv2.line(frame, origin_pt, x_origin, (0, 0, 255), 3)
+            cv2.line(frame, origin_pt, y_origin, (0, 255, 0), 3)
+            cv2.line(frame, origin_pt, z_origin, (255, 0, 0), 3)
 
         return frame
-
-    def mouse_callback(self, x, y, frame_height, frame_width, position, rotation, focal_length):
-        # Debug ray casting
-        print("\nRay Debug:")
-        print(f"Clicked pixel: ({x}, {y})")
-
-        # Get camera parameters
-        fx = fy = min(frame_height, frame_width)
-        cx, cy = frame_width / 2, frame_height / 2
-        rotation = Rotation.from_quat(rotation)
-
-        # Convert to normalized device coordinates
-        x_ndc = -(x - cx) / fx  # Flip X to match world space
-        y_ndc = (cy - y) / fy  # Flip Y to match world space
-
-        # Create ray in camera space (positive Z is forward)
-        ray_dir = np.array([
-            x_ndc / focal_length,
-            y_ndc / focal_length,
-            1.0  # Changed to positive Z for forward
-        ])
-        ray_dir = ray_dir / np.linalg.norm(ray_dir)
-
-        # Transform ray to world space
-        world_ray = rotation.apply(ray_dir)
-        print(f"Ray direction (world space): {world_ray}")
-
-        # Test intersections
-        hw, hd = self.__room_width / 2, self.__room_depth / 2
-
-        # Test floor (y = 0)
-        if abs(world_ray[1]) > 1e-6:
-            t = -position[1] / world_ray[1]
-            if t > 0:
-                point = position + t * world_ray
-                if abs(point[0]) <= hw and abs(point[2]) <= hd:
-                    print(f"Floor intersection at: {point}")
-
-        # Test back wall (z = -hd)
-        if abs(world_ray[2]) > 1e-6:
-            t = (-hd - position[2]) / world_ray[2]
-            if t > 0:
-                point = position + t * world_ray
-                if abs(point[0]) <= hw and 0 <= point[1] <= self.__room_height:
-                    print(f"Back wall intersection at: {point}")
-
-        # Test left wall (x = hw)  # Flipped from -hw to hw
-        if abs(world_ray[0]) > 1e-6:
-            t = (hw - position[0]) / world_ray[0]
-            if t > 0:
-                point = position + t * world_ray
-                if abs(point[2]) <= hd and 0 <= point[1] <= self.__room_height:
-                    print(f"Left wall intersection at: {point}")
-
-        # Test right wall (x = -hw)  # Flipped from hw to -hw
-        if abs(world_ray[0]) > 1e-6:
-            t = (-hw - position[0]) / world_ray[0]
-            if t > 0:
-                point = position + t * world_ray
-                if abs(point[2]) <= hd and 0 <= point[1] <= self.__room_height:
-                    print(f"Right wall intersection at: {point}")
