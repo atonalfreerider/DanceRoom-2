@@ -10,13 +10,12 @@ class FootProjector:
         self.__output_dir = output_dir
         self.__lead_file = os.path.join(output_dir, 'lead.json')
         self.__follow_file = os.path.join(output_dir, 'follow.json')
-        self.__camera_tracking_file = os.path.join(output_dir, 'camera_tracking.json')
         self.__initial_camera_pose = utils.load_json(os.path.join(output_dir, 'initial_camera_pose.json'))
         self.__initial_camera_position = np.array(self.__initial_camera_pose['position'])
         self.__frame_height, self.__frame_width = frame_height, frame_width
 
         # Extract camera data
-        camera_tracking = utils.load_json_integer_keys(self.__camera_tracking_file)
+        camera_tracking = utils.load_json_integer_keys(os.path.join(output_dir, 'camera_tracking.json'))
         # Store quaternions
         self.__camera_quats = [np.array(frame['rotation']) for frame in camera_tracking.values()]
         self.__focal_lengths = [frame['focal_length'] for frame in camera_tracking.values()]

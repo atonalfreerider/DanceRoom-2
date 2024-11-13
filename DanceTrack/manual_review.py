@@ -4,15 +4,15 @@ from pathlib import Path
 import tkinter as tk
 from collections import OrderedDict
 import os
+import time
 
 import utils
 from DanceTrack.pose_data_utils import PoseDataUtils
-import time
+
 
 class ManualReview:
     def __init__(self, video_path:str, output_dir:str, frame_height:int, frame_width:int, frame_count:int):
-        self.__detections_file = os.path.join(output_dir, 'detections.json')
-        self.__output_dir = Path(output_dir)
+        detections_file = os.path.join(output_dir, 'detections.json')
         self.__cap = cv2.VideoCapture(video_path)
         self.__frame_count = frame_count
         self.current_frame = 0
@@ -34,29 +34,29 @@ class ManualReview:
         self.pose_utils = PoseDataUtils()
 
         # Load detections
-        self.__detections_modified_file = os.path.join(self.__output_dir, 'detections-modified.json')
+        self.__detections_modified_file = os.path.join(output_dir, 'detections-modified.json')
         if Path(self.__detections_modified_file).exists():
             self.__detections = utils.load_json_integer_keys(self.__detections_modified_file)
         else:
             # If detections-modified.json doesn't exist, create it from detections.json
-            self.__detections = utils.load_json_integer_keys(self.__detections_file)
+            self.__detections = utils.load_json_integer_keys(detections_file)
 
-            utils.save_json(self.__detections, self.__detections_file)
-            print(f"Created {self.__detections_modified_file} as a duplicate of {self.__detections_file}")
+            utils.save_json(self.__detections, detections_file)
+            print(f"Created {self.__detections_modified_file} as a duplicate of {detections_file}")
 
         # Load lead and follow
-        self.__lead_file = self.__output_dir / "lead.json"
-        self.__follow_file = self.__output_dir / "follow.json"
-        self.__lead = utils.load_json_integer_keys(self.__lead_file) if self.__lead_file.exists() else {}
-        self.__follow = utils.load_json_integer_keys(self.__follow_file) if self.__follow_file.exists() else {}
+        self.__lead_file = os.path.join(output_dir, 'lead.json')
+        self.__follow_file = os.path.join(output_dir, 'follow.json')
+        self.__lead = utils.load_json_integer_keys(self.__lead_file) if Path(self.__lead_file).exists() else {}
+        self.__follow = utils.load_json_integer_keys(self.__follow_file) if Path(self.__follow_file).exists() else {}
 
         # GUI
-        self.__root = tk.Tk()
-        self.__root.title("Save JSON")
-        self.__root.geometry("200x50")
-        self.__save_button = tk.Button(self.__root, text="Save to JSON", command=self.__save_json_files)
-        self.__save_button.pack(pady=10)
-        self.__root.withdraw()  # Hide the window initially
+        root = tk.Tk()
+        root.title("Save JSON")
+        root.geometry("200x50")
+        save_button = tk.Button(root, text="Save to JSON", command=self.__save_json_files)
+        save_button.pack(pady=10)
+        root.withdraw()  # Hide the window initially
 
         cv2.namedWindow(self.__window_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(self.__window_name, self.__frame_width, self.__frame_height)

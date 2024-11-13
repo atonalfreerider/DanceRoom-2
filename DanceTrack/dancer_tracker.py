@@ -14,11 +14,10 @@ class DancerTracker:
         self.__video_path = video_path
         self.__frame_height, self.__frame_width = frame_height, frame_width
 
-        self.__detections_file = os.path.join(output_dir, 'detections.json')
         self.__lead_file = os.path.join(output_dir, 'lead.json')
         self.__follow_file = os.path.join(output_dir, 'follow.json')
 
-        self.__detections = utils.load_json_integer_keys(self.__detections_file)
+        self.__detections = utils.load_json_integer_keys(os.path.join(output_dir, 'detections.json'))
 
         # Add new path for analysis cache
         self.__analysis_cache_file = os.path.join(output_dir, 'face_analysis.json')
