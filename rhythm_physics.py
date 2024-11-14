@@ -69,10 +69,10 @@ def realign_at_discontinuity(frame, ground_ankles, frame_idx, role):
     floor_side, floor_ankle = find_floor_foot(frame)
     floor_key = f'{role}_{floor_side}'
     
-    if str(frame_idx) not in ground_ankles or floor_key not in ground_ankles[str(frame_idx)]:
+    if frame_idx not in ground_ankles or floor_key not in ground_ankles[frame_idx]:
         return frame
         
-    floor_ankle_pos = ground_ankles[str(frame_idx)][floor_key]
+    floor_ankle_pos = ground_ankles[frame_idx][floor_key]
     return align_pose_to_floor_xz(frame, floor_ankle_pos, floor_ankle)
 
 def process_frames_with_discontinuity_correction(frames, ground_ankles, role):
@@ -107,8 +107,8 @@ def process_frames_with_discontinuity_correction(frames, ground_ankles, role):
             floor_side, floor_ankle = find_floor_foot(processed_frames[i])
             floor_key = f'{role}_{floor_side}'
             
-            if str(i) in ground_ankles and floor_key in ground_ankles[str(i)]:
-                floor_ankle_pos = ground_ankles[str(i)][floor_key]
+            if i in ground_ankles and floor_key in ground_ankles[i]:
+                floor_ankle_pos = ground_ankles[i][floor_key]
                 correction_translation = [
                     floor_ankle_pos[0] - floor_ankle['x'],
                     0,
@@ -241,8 +241,8 @@ def process_frame_discontinuities(frames, ground_ankles, role):
         floor_side, floor_ankle = find_floor_foot(processed_frames[discontinuity_frame])
         floor_key = f'{role}_{floor_side}'
         
-        if str(discontinuity_frame) in ground_ankles and floor_key in ground_ankles[str(discontinuity_frame)]:
-            target_pos = ground_ankles[str(discontinuity_frame)][floor_key]
+        if discontinuity_frame in ground_ankles and floor_key in ground_ankles[discontinuity_frame]:
+            target_pos = ground_ankles[discontinuity_frame][floor_key]
             
             # Calculate translation needed at discontinuity point
             correction_translation = [
@@ -262,8 +262,7 @@ def smooth_floor_positions(ground_ankles, window_size=20):
     smoothed_ankles = {}
     
     # Convert frame indices to integers and sort
-    frame_indices = sorted([int(k) for k in ground_ankles.keys()])
-    max_frame = max(frame_indices)
+    frame_indices = sorted([k for k in ground_ankles.keys()])
     
     # Initialize arrays for each ankle type
     positions = {
@@ -275,18 +274,17 @@ def smooth_floor_positions(ground_ankles, window_size=20):
     
     # Collect all positions
     for frame in frame_indices:
-        frame_str = str(frame)
         for ankle_type in positions:
-            if ankle_type in ground_ankles[frame_str]:
-                pos = ground_ankles[frame_str][ankle_type]
+            if ankle_type in ground_ankles[frame]:
+                pos = ground_ankles[frame][ankle_type]
                 positions[ankle_type]['x'].append(pos[0])
                 positions[ankle_type]['z'].append(pos[2])
             else:
                 # If position missing, use nearest available position
                 for nearby_frame in range(frame-5, frame+6):
-                    if (str(nearby_frame) in ground_ankles and 
-                        ankle_type in ground_ankles[str(nearby_frame)]):
-                        pos = ground_ankles[str(nearby_frame)][ankle_type]
+                    if (nearby_frame in ground_ankles and
+                        ankle_type in ground_ankles[nearby_frame]):
+                        pos = ground_ankles[nearby_frame][ankle_type]
                         positions[ankle_type]['x'].append(pos[0])
                         positions[ankle_type]['z'].append(pos[2])
                         break
@@ -312,9 +310,9 @@ def smooth_floor_positions(ground_ankles, window_size=20):
         
         # Store smoothed positions
         for i, frame in enumerate(frame_indices):
-            if str(frame) not in smoothed_ankles:
-                smoothed_ankles[str(frame)] = {}
-            smoothed_ankles[str(frame)][ankle_type] = [x_smooth[i], 0, z_smooth[i]]
+            if frame not in smoothed_ankles:
+                smoothed_ankles[frame] = {}
+            smoothed_ankles[frame][ankle_type] = [x_smooth[i], 0, z_smooth[i]]
     
     return smoothed_ankles
 
@@ -331,15 +329,14 @@ def guide_poses_to_ground(frames, smoothed_ankles, role):
     cumulative_translation = [0, 0, 0]  # Keep track of accumulated translation
     
     for i in range(len(guided_frames)):
-        frame_str = str(i)
-        if frame_str not in smoothed_ankles:
+        if i not in smoothed_ankles:
             continue
             
         # Find grounded foot
         floor_side, floor_ankle = find_floor_foot(guided_frames[i])
         floor_key = f'{role}_{floor_side}'  # Use correct role
         
-        if floor_key not in smoothed_ankles[frame_str]:
+        if floor_key not in smoothed_ankles[i]:
             continue
             
         # Apply cumulative translation to current ankle position for error calculation
@@ -349,7 +346,7 @@ def guide_poses_to_ground(frames, smoothed_ankles, role):
             'z': floor_ankle['z'] + cumulative_translation[2]
         }
         
-        target_pos = smoothed_ankles[frame_str][floor_key]
+        target_pos = smoothed_ankles[i][floor_key]
         
         # Calculate error and interpolation factor
         error_distance = np.sqrt(
@@ -380,7 +377,7 @@ def guide_poses_to_ground(frames, smoothed_ankles, role):
 
 def main(output_dir:str, lead_follow_height_ratio:float):
     ground_ankle_path = os.path.join(output_dir, 'all_floor_ankles.json')
-    ground_ankles = utils.load_json(ground_ankle_path)
+    ground_ankles = utils.load_json_integer_keys(ground_ankle_path)
 
     lead_keypoints_path = os.path.join(output_dir, 'lead_smoothed_keypoints_3d.json')
     lead_keypoints = utils.load_json(lead_keypoints_path)
