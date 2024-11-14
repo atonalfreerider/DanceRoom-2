@@ -114,8 +114,13 @@ class ManualReview:
             pose_type = 'unknown'
             if self.current_frame in self.__lead and self.__lead[self.current_frame] and detection['id'] == self.__lead[self.current_frame]['id']:
                 pose_type = 'lead'
+                lead_bbox = detection['bbox']
+                cv2.rectangle(frame, (int(lead_bbox[0]), int(lead_bbox[1])), (int(lead_bbox[2]), int(lead_bbox[3])), (0,0,255), 1)
             elif self.current_frame in self.__follow and self.__follow[self.current_frame] and detection['id'] == self.__follow[self.current_frame]['id']:
                 pose_type = 'follow'
+                follow_bbox = detection['bbox']
+                cv2.rectangle(frame, (int(follow_bbox[0]), int(follow_bbox[1])), (int(follow_bbox[2]), int(follow_bbox[3])),
+                              (255, 255, 255), 1)
             PoseDataUtils.draw_pose(frame, detection['keypoints'], detection['id'], pose_type)
 
         # Highlight hovered pose
@@ -125,9 +130,12 @@ class ManualReview:
         # Draw the "Save to JSON" button
         button_top = self.__frame_height - self.__button_height - 10
         button_left = self.__frame_width - self.__button_width - 10
-        cv2.rectangle(frame, (button_left, button_top), 
-                      (button_left + self.__button_width, button_top + self.__button_height), 
-                      self.__button_color, -1)
+        cv2.rectangle(
+            frame,
+            (button_left, button_top),
+            (button_left + self.__button_width, button_top + self.__button_height),
+            self.__button_color, -1)
+
         cv2.putText(frame, "Save to JSON", (button_left + 10, button_top + 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.__button_text_color, 2)
 
