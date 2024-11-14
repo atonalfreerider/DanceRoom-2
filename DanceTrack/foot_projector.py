@@ -1,8 +1,9 @@
 import os
 import numpy as np
-from typing import Optional
+from typing import Optional, Dict, List, Tuple
 import utils
 from scipy.spatial.transform import Rotation
+from sklearn.linear_model import RANSACRegressor
 
 
 class FootProjector:
@@ -62,54 +63,116 @@ class FootProjector:
         intersection = ray_origin + t * ray_direction
         return intersection
 
+    @staticmethod
+    def __find_streaks(poses: Dict, frame_indices: List[int]) -> List[Tuple[str, List[int]]]:
+        """Find consecutive sequences where one foot is lower than the other"""
+        streaks = []
+        current_foot = None
+        current_streak = []
+        
+        for frame in frame_indices:
+            if poses[frame]['id'] == -1:
+                if current_streak:
+                    streaks.append((current_foot, current_streak))
+                    current_streak = []
+                continue
+                
+            left_y = poses[frame]['keypoints'][15][1]  # y-coordinate
+            right_y = poses[frame]['keypoints'][16][1]
+            
+            if left_y <= 0 and right_y <= 0:
+                if current_streak:
+                    streaks.append((current_foot, current_streak))
+                    current_streak = []
+                continue
+                
+            foot = 'left' if left_y > right_y and left_y > 0 else 'right' if right_y > 0 else None
+            
+            if foot != current_foot and current_streak:
+                streaks.append((current_foot, current_streak))
+                current_streak = []
+            
+            if foot is not None:
+                current_foot = foot
+                current_streak.append(frame)
+                
+        if current_streak:
+            streaks.append((current_foot, current_streak))
+            
+        return streaks
+
+    @staticmethod
+    def __clean_floor_points(points: List[np.ndarray]) -> Optional[np.ndarray]:
+        """Apply RANSAC and average to a sequence of floor points"""
+        if len(points) < 3:  # Need at least 3 points for meaningful RANSAC
+            return np.mean(points, axis=0) if points else None
+            
+        points = np.array(points)
+        X = points[:, [0, 2]]  # Use X and Z coordinates for RANSAC
+        y = points[:, 1]  # Y coordinates
+        
+        ransac = RANSACRegressor(random_state=42, min_samples=3)
+        try:
+            ransac.fit(X, y)
+            inlier_mask = ransac.inlier_mask_
+            cleaned_points = points[inlier_mask]
+            return np.mean(cleaned_points, axis=0) if len(cleaned_points) > 0 else None
+        except:
+            return np.mean(points, axis=0) if len(points) > 0 else None
+
     def project_feet_to_ground(self):
         # Load data
         lead_poses = utils.load_json_integer_keys(self.__lead_file)
         follow_poses = utils.load_json_integer_keys(self.__follow_file)
-
+        
+        # Get frame indices
+        frame_indices = sorted(lead_poses.keys())
+        
+        # Find streaks for both dancers
+        lead_streaks = self.__find_streaks(lead_poses, frame_indices)
+        follow_streaks = self.__find_streaks(follow_poses, frame_indices)
+        
+        # Process streaks into floor positions
         all_ankle_positions_per_frame = {}
-
-        # Process each frame
-        for frame in lead_poses.keys():
-            frame_ankles = {}
-            focal_length = self.__focal_lengths[frame]
-            rotation = self.__camera_quats[frame]
-
-            # Process lead ankles (indices 15 and 16 are left and right ankles)
-            if lead_poses[frame]['id'] != -1:
-                lead_bbox = lead_poses[frame]['bbox']
-                lead_y2 = lead_bbox[3]
-                if lead_y2 > self.__frame_height  *.95:
-                    continue # bbox bottom is too close to bottom of frame -> skip
-
-                lead_left = lead_poses[frame]['keypoints'][15][:2]
-                lead_right = lead_poses[frame]['keypoints'][16][:2]
-
-                if lead_left[1] > lead_right[1] and lead_left[1] > 0:
-                    floor_pos = self.__project_point_to_floor([lead_left[0], lead_y2], rotation, focal_length)
-                    frame_ankles['lead_left'] = floor_pos
-                elif lead_right[1] > 0:
-                    floor_pos = self.__project_point_to_floor([lead_right[0], lead_y2], rotation, focal_length)
-                    frame_ankles['lead_right'] = floor_pos
-
-            # Process follow ankles (indices 15 and 16 are left and right ankles)
-            if follow_poses[frame]['id'] != -1:
-                follow_bbox = follow_poses[frame]['bbox']
-                follow_y2 = follow_bbox[3]
-                if follow_y2 > self.__frame_height * .95:
-                    continue  # bbox bottom is too close to bottom of frame -> skip
-
-                follow_left = follow_poses[frame]['keypoints'][15][:2]
-                follow_right = follow_poses[frame]['keypoints'][16][:2]
-
-                if follow_left[1] > follow_right[1] and follow_left[1] > 0:
-                    floor_pos = self.__project_point_to_floor([follow_left[0], follow_y2], rotation, focal_length)
-                    frame_ankles['follow_left'] = floor_pos
-                elif follow_right[1] > 0:
-                    floor_pos = self.__project_point_to_floor([follow_right[0], follow_y2], rotation, focal_length)
-                    frame_ankles['follow_right'] = floor_pos
-
-            all_ankle_positions_per_frame[frame] = frame_ankles
+        
+        # Process each streak for lead and follow
+        for is_lead, streaks in [(True, lead_streaks), (False, follow_streaks)]:
+            dancer_prefix = 'lead' if is_lead else 'follow'
+            poses = lead_poses if is_lead else follow_poses
+            
+            for foot, streak_frames in streaks:
+                floor_points = []
+                
+                # Collect floor points for the streak
+                for frame in streak_frames:
+                    focal_length = self.__focal_lengths[frame]
+                    rotation = self.__camera_quats[frame]
+                    bbox = poses[frame]['bbox']
+                    y2 = bbox[3]
+                    
+                    if y2 > self.__frame_height * .95:
+                        continue
+                        
+                    keypoint_idx = 15 if foot == 'left' else 16
+                    ankle_pos = poses[frame]['keypoints'][keypoint_idx][:2]
+                    
+                    if ankle_pos[1] > 0:
+                        floor_pos = self.__project_point_to_floor(
+                            [ankle_pos[0], y2], rotation, focal_length)
+                        if floor_pos is not None:
+                            floor_points.append(floor_pos)
+                
+                # Clean and average the floor points
+                if floor_points:
+                    cleaned_pos = self.__clean_floor_points(floor_points)
+                    if cleaned_pos is not None:
+                        # Apply the cleaned position to all frames in the streak
+                        for frame in streak_frames:
+                            if frame not in all_ankle_positions_per_frame:
+                                all_ankle_positions_per_frame[frame] = {}
+                            key = f'{dancer_prefix}_{foot}'
+                            all_ankle_positions_per_frame[frame][key] = cleaned_pos
 
         # Save results
-        utils.save_numpy_json(all_ankle_positions_per_frame, os.path.join(self.__output_dir, 'all_floor_ankles.json'))
+        utils.save_numpy_json(all_ankle_positions_per_frame, 
+                            os.path.join(self.__output_dir, 'all_floor_ankles.json'))
