@@ -207,6 +207,28 @@ def calculate_interpolation_factor(error_distance, max_error=0.25):
     """Calculate interpolation factor based on error distance"""
     return min(error_distance / max_error, 1.0)
 
+def check_consistent_foot_sequence(ground_ankles, frame_idx, floor_key, min_sequence=8):
+    """Check if there are at least min_sequence adjacent frames with the same floor key"""
+    max_frame = max(ground_ankles.keys())  # Get the last frame number
+    
+    # Check all possible min_sequence-length windows that include frame_idx
+    earliest_possible_start = max(0, frame_idx - (min_sequence - 1))
+    latest_possible_start = min(frame_idx, max_frame - min_sequence + 1)
+    
+    for start in range(earliest_possible_start, latest_possible_start + 1):
+        end = start + min_sequence
+        sequence_valid = True
+        
+        for i in range(start, end):
+            if i not in ground_ankles or floor_key not in ground_ankles[i]:
+                sequence_valid = False
+                break
+                
+        if sequence_valid:
+            return True
+            
+    return False
+
 def guide_poses_to_ground(frames, ground_ankles, role, camera_position):
     """Guide poses towards smoothed ground positions while maintaining continuity"""
     if not frames:
@@ -230,6 +252,10 @@ def guide_poses_to_ground(frames, ground_ankles, role, camera_position):
         floor_key = f'{role}_{floor_side}'  # Use correct role
         
         if floor_key not in ground_ankles[i]:
+            continue
+
+        # Check for consistent foot sequence
+        if not check_consistent_foot_sequence(ground_ankles, i, floor_key):
             continue
 
         target_pos = ground_ankles[i][floor_key]
