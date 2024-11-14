@@ -130,3 +130,112 @@ class PoseDataUtils:
 
         cv2.putText(image, text, (int(keypoints[0][0]), int(keypoints[0][1]) - 20),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+    @staticmethod
+    def draw_smpl_pose(image, keypoints, track_id, pose_type):
+        """Draw SMPL format pose on image
+        
+        Args:
+            image: OpenCV image to draw on
+            keypoints: List of 24 SMPL joints with [x,y,z] coordinates
+            track_id: ID number to display
+            pose_type: One of 'lead', 'follow', 'unknown', or 'hovered'
+        """
+        color = (125, 125, 125)  # Default gray
+        if pose_type == 'lead':
+            color = (0, 0, 255)  # Red
+        elif pose_type == 'follow':
+            color = (255, 192, 203)  # Pink
+        elif pose_type == 'hovered':
+            color = (255, 255, 0)  # Yellow
+
+        # Define SMPL skeleton connections
+        connections = [
+            # Legs
+            (7, 4),   # L_Calf: L_Ankle -> L_Knee
+            (8, 5),   # R_Calf: R_Ankle -> R_Knee
+            (1, 4),   # L_Thigh: L_Hip -> L_Knee  
+            (2, 5),   # R_Thigh: R_Hip -> R_Knee
+            (1, 0),   # L_HipToPelvis: L_Hip -> Pelvis
+            (2, 0),   # R_HipToPelvis: R_Hip -> Pelvis
+            
+            # Arms
+            (16, 18), # L_UpperArm: L_Shoulder -> L_Elbow
+            (17, 19), # R_UpperArm: R_Shoulder -> R_Elbow
+            (18, 20), # L_Forearm: L_Elbow -> L_Wrist
+            (19, 21), # R_Forearm: R_Elbow -> R_Wrist
+            
+            # Spine
+            (0, 3),   # PelvisToSpine1: Pelvis -> Spine1
+            (9, 6),   # Spine3ToSpine2: Spine3 -> Spine2
+            (6, 3),   # Spine2ToSpine1: Spine2 -> Spine1
+            (9, 12),  # Spine3ToNeck: Spine3 -> Neck
+            (12, 15), # NeckToHead: Neck -> Head
+            
+            # Feet and Hands
+            (7, 10),  # L_Foot: L_Ankle -> L_Foot
+            (8, 11),  # R_Foot: R_Ankle -> R_Foot
+            (20, 22), # L_Hand: L_Wrist -> L_Hand
+            (21, 23), # R_Hand: R_Wrist -> R_Hand
+            
+            # Collar connections
+            (16, 13), # L_CollarToShoulder: L_Shoulder -> L_Collar
+            (17, 14), # R_CollarToShoulder: R_Shoulder -> R_Collar
+            (13, 12), # L_CollarToNeck: L_Collar -> Neck
+            (14, 12)  # R_CollarToNeck: R_Collar -> Neck
+        ]
+
+        overlay = np.zeros_like(image, dtype=np.uint8)
+
+        def is_valid_point(point):
+            return point[0] != 0 or point[1] != 0
+
+        line_thickness = 1 if pose_type == 'unknown' else 3
+
+        # Draw connections
+        for connection in connections:
+            if len(keypoints) > max(connection):
+                start_point = keypoints[connection[0]]
+                end_point = keypoints[connection[1]]
+
+                cv2.line(overlay, start_point, end_point, color, line_thickness)
+
+        # Draw joints
+        for point in keypoints:
+            cv2.circle(overlay, point, 3, color, -1)
+
+        # Add L/R indicators if lead or follow
+        if pose_type in ['lead', 'follow']:
+            # Left side label
+            left_shoulder = keypoints[16][:2]
+            left_hip = keypoints[1][:2]
+            if is_valid_point(left_shoulder) and is_valid_point(left_hip):
+                mid_point = ((left_shoulder[0] + left_hip[0]) // 2, 
+                           (left_shoulder[1] + left_hip[1]) // 2)
+                cv2.putText(image, 'L', tuple(map(int, mid_point)), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+            # Right side label
+            right_shoulder = keypoints[17][:2]
+            right_hip = keypoints[2][:2]
+            if is_valid_point(right_shoulder) and is_valid_point(right_hip):
+                mid_point = ((right_shoulder[0] + right_hip[0]) // 2,
+                           (right_shoulder[1] + right_hip[1]) // 2)
+                cv2.putText(image, 'R', tuple(map(int, mid_point)),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        cv2.add(image, overlay, image)
+
+        # Add track ID and role label
+        text = str(track_id)
+        if pose_type == 'lead':
+            text = 'LEAD ' + text
+        elif pose_type == 'follow':
+            text = 'FOLLOW ' + text
+
+        # Draw label above head
+        head_pos = keypoints[15][:2]  # Head joint
+        if is_valid_point(head_pos):
+            cv2.putText(image, text, 
+                       (int(head_pos[0]), int(head_pos[1]) - 20),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
