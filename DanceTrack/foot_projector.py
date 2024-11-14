@@ -1,6 +1,6 @@
 import os
 import numpy as np
-from typing import Optional, List
+from typing import Optional
 import utils
 from scipy.spatial.transform import Rotation
 
@@ -20,7 +20,7 @@ class FootProjector:
         self.__camera_quats = [np.array(frame['rotation']) for frame in camera_tracking.values()]
         self.__focal_lengths = [frame['focal_length'] for frame in camera_tracking.values()]
 
-    def __project_point_to_planes(self, image_point, rotation_quat, focal_length):
+    def __project_point_to_floor(self, image_point, rotation_quat, focal_length):
         """Project image point to world coordinates and determine which plane it lies on"""
         fx = fy = min(self.__frame_height, self.__frame_width)
         cx, cy = self.__frame_width / 2, self.__frame_height / 2
@@ -41,10 +41,10 @@ class FootProjector:
         # Transform ray to world space
         world_ray = rotation.apply(ray_dir)
 
-        return self.__ray_plane_intersection(self.__initial_camera_position, world_ray)
+        return self.__ray_floor_intersection(self.__initial_camera_position, world_ray)
 
     @staticmethod
-    def __ray_plane_intersection(ray_origin: np.ndarray, ray_direction: np.ndarray) -> Optional[np.ndarray]:
+    def __ray_floor_intersection(ray_origin: np.ndarray, ray_direction: np.ndarray) -> Optional[np.ndarray]:
         """Calculate intersection of ray with floor plane (Y=0)"""
         plane_normal = np.array([0, 1, 0])  # Y-up
         plane_d = 0  # Floor at Y=0
@@ -77,27 +77,39 @@ class FootProjector:
 
             # Process lead ankles (indices 15 and 16 are left and right ankles)
             if lead_poses[frame]['id'] != -1:
-                for ankle_name, ankle_idx in [('lead_left', 15), ('lead_right', 16)]:
-                    ankle_pos = lead_poses[frame]['keypoints'][ankle_idx][:2]  # Get x,y coordinates
-                    if ankle_pos[0] != 0 or ankle_pos[1] != 0:  # Check if valid keypoint
-                        floor_pos = self.__project_point_to_planes(ankle_pos, rotation, focal_length)
-                        if floor_pos is not None:
-                            xyz = floor_pos.tolist()
-                            xyz[1] = 0
-                            frame_ankles[ankle_name] = xyz
+                lead_bbox = lead_poses[frame]['bbox']
+                lead_y2 = lead_bbox[3]
+                if lead_y2 > self.__frame_height  *.95:
+                    continue # bbox bottom is too close to bottom of frame -> skip
 
-            # Process follow ankles
-            if frame in follow_poses and follow_poses[frame]['id'] != -1:
-                for ankle_name, ankle_idx in [('follow_left', 15), ('follow_right', 16)]:
-                    ankle_pos = follow_poses[frame]['keypoints'][ankle_idx][:2]
-                    if ankle_pos[0] != 0 or ankle_pos[1] != 0:
-                        floor_pos = self.__project_point_to_planes(ankle_pos, rotation, focal_length)
-                        if floor_pos is not None:
-                            xyz = floor_pos.tolist()
-                            xyz[1] = 0
-                            frame_ankles[ankle_name] = xyz
+                lead_left = lead_poses[frame]['keypoints'][15][:2]
+                lead_right = lead_poses[frame]['keypoints'][16][:2]
+
+                if lead_left[1] > lead_right[1] and lead_left[1] > 0:
+                    floor_pos = self.__project_point_to_floor([lead_left[0], lead_y2], rotation, focal_length)
+                    frame_ankles['lead_left'] = floor_pos
+                elif lead_right[1] > 0:
+                    floor_pos = self.__project_point_to_floor([lead_right[0], lead_y2], rotation, focal_length)
+                    frame_ankles['lead_right'] = floor_pos
+
+            # Process follow ankles (indices 15 and 16 are left and right ankles)
+            if follow_poses[frame]['id'] != -1:
+                follow_bbox = follow_poses[frame]['bbox']
+                follow_y2 = follow_bbox[3]
+                if follow_y2 > self.__frame_height * .95:
+                    continue  # bbox bottom is too close to bottom of frame -> skip
+
+                follow_left = follow_poses[frame]['keypoints'][15][:2]
+                follow_right = follow_poses[frame]['keypoints'][16][:2]
+
+                if follow_left[1] > follow_right[1] and follow_left[1] > 0:
+                    floor_pos = self.__project_point_to_floor([follow_left[0], follow_y2], rotation, focal_length)
+                    frame_ankles['follow_left'] = floor_pos
+                elif follow_right[1] > 0:
+                    floor_pos = self.__project_point_to_floor([follow_right[0], follow_y2], rotation, focal_length)
+                    frame_ankles['follow_right'] = floor_pos
 
             all_ankle_positions_per_frame[frame] = frame_ankles
 
         # Save results
-        utils.save_json(all_ankle_positions_per_frame, os.path.join(self.__output_dir, 'all_floor_ankles.json'))
+        utils.save_numpy_json(all_ankle_positions_per_frame, os.path.join(self.__output_dir, 'all_floor_ankles.json'))
