@@ -5,6 +5,7 @@ import os
 import json
 
 import utils
+from DanceTrack.pose_data_utils import PoseDataUtils
 from DanceTrack.virtual_room import VirtualRoom
 
 
@@ -15,6 +16,10 @@ class DanceRoomTracker:
         self.__frame_height, self.__frame_width = frame_height, frame_width
         self.__initial_camera_pose_json_path = os.path.join(output_dir, 'initial_camera_pose.json')
         self.__camera_tracking_json_path = os.path.join(output_dir, 'camera_tracking.json')
+
+        self.__floor_ankles = utils.load_json_integer_keys(os.path.join(output_dir, 'all_floor_ankles.json'))
+        self.__lead_3d = utils.load_json(os.path.join(output_dir, 'lead_aligned_keypoints_3d.json'))
+        self.__follow_3d = utils.load_json(os.path.join(output_dir, 'follow_aligned_keypoints_3d.json'))
         
         # Load initial camera pose (position and initial orientation/focal)
         self.__user_has_set_cam_pos = False
@@ -336,6 +341,48 @@ class DanceRoomTracker:
             rot,
             focal
         )
+
+        lead_follow = self.__floor_ankles.get(self.current_frame_idx, None)
+        if lead_follow:
+            points = []
+            roles = []
+
+            for key in ['lead_left', 'lead_right', 'follow_left', 'follow_right']:
+                value = lead_follow.get(key, None)
+                if value is not None:  # Only add to points if value is not None
+                    points.append(value)
+                    role = "lead" if key.startswith("lead") else "follow"
+                    roles.append(role)
+
+            projected_points, projected_behind = self.__virtualRoom.project_points(
+                points,
+                rot,
+                self.__initial_camera_pose['position'],
+                focal)
+
+            for proj, role in zip(projected_points, roles):
+                color = (0, 0, 255) if role == "lead" else (255, 255, 255)  # Red for lead, white for follow
+                cv2.circle(display_frame, proj, 2, color, -1)
+
+        lead_3d_pose = self.__lead_3d[self.current_frame_idx]
+        lead_3d_points = [[point["x"], point["y"], -point["z"]] for point in lead_3d_pose] #reverse GVHMR Z
+        projected_lead_points, projected_lead_behind = self.__virtualRoom.project_points(
+            lead_3d_points,
+            rot,
+            self.__initial_camera_pose['position'],
+            focal)
+
+        PoseDataUtils.draw_smpl_pose(display_frame, projected_lead_points, 0, "lead")
+
+        follow_3d_pose = self.__follow_3d[self.current_frame_idx]
+        follow_3d_points = [[point["x"], point["y"], -point["z"]] for point in follow_3d_pose] #reverse GVHMR Z
+        projected_follow_points, projected_follow_behind = self.__virtualRoom.project_points(
+            follow_3d_points,
+            rot,
+            self.__initial_camera_pose['position'],
+            focal)
+
+        PoseDataUtils.draw_smpl_pose(display_frame, projected_follow_points, 1, "follow")
 
         # Add UI text
         if paused:
