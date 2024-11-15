@@ -12,7 +12,7 @@ from DanceTrack.pose_data_utils import PoseDataUtils
 
 class ManualReview:
     def __init__(self, video_path:str, output_dir:str, frame_height:int, frame_width:int, frame_count:int):
-        detections_file = os.path.join(output_dir, 'detections.json')
+        self.__detections_modified_file = os.path.join(output_dir, 'detections-modified.json')
         self.__cap = cv2.VideoCapture(video_path)
         self.__frame_count = frame_count
         self.current_frame = 0
@@ -34,15 +34,13 @@ class ManualReview:
         self.pose_utils = PoseDataUtils()
 
         # Load detections
-        self.__detections_modified_file = os.path.join(output_dir, 'detections-modified.json')
+
         if Path(self.__detections_modified_file).exists():
             self.__detections = utils.load_json_integer_keys(self.__detections_modified_file)
         else:
+            self.__detections = utils.load_json_integer_keys(os.path.join(output_dir, 'detections.json'))
             # If detections-modified.json doesn't exist, create it from detections.json
-            self.__detections = utils.load_json_integer_keys(detections_file)
-
-            utils.save_json(self.__detections, detections_file)
-            print(f"Created {self.__detections_modified_file} as a duplicate of {detections_file}")
+            utils.save_json(self.__detections, self.__detections_modified_file)
 
         # Load lead and follow
         self.__lead_file = os.path.join(output_dir, 'lead.json')
