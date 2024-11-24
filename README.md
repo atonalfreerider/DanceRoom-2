@@ -69,7 +69,7 @@ GVHMR:
 https://github.com/atonalfreerider/GVHMR
 
 GVHMR model:  
-https://drive.google.com/drive/folders/10sEef1V_tULzddFxzCmDUpsIqfv7eP-P?usp=drive_link
+https://drive.google.com/drive/folders/1eebJ13FUEXrKBawHpJroW0sNSxLjh9xD?usp=drive_link
 
 output keypoints 3D json for lead and follow  
 
